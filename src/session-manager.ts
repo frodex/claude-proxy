@@ -92,12 +92,15 @@ export class SessionManager {
     // Clear screen and attach to PTY output (no alternate screen — native scrolling works)
     client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
+    this.updateTitle(sessionId);
 
     // Set up hotkey handler for this client
     const hotkey = new HotkeyHandler({
       onPassthrough: (data) => {
         client.lastKeystroke = Date.now();
+        session.statusBar.recordKeystroke(client.username);
         session.pty.write(data);
+        this.updateTitle(sessionId);
       },
       onDetach: () => {
         this.leaveSession(sessionId, client);
@@ -144,6 +147,7 @@ export class SessionManager {
       session.sizeOwner = nextOwner.id;
       session.pty.resize(nextOwner.termSize.cols, nextOwner.termSize.rows);
     }
+    this.updateTitle(sessionId);
   }
 
   handleInput(sessionId: string, client: Client, data: Buffer): void {
@@ -198,6 +202,37 @@ export class SessionManager {
     if (session) {
       session.onClientDetach = callback;
     }
+  }
+
+  private updateTitle(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const users = Array.from(session.clients.values()).map(c => {
+      const prefix = c.id === session.sizeOwner ? '*' : '';
+      const typing = session.statusBar.isTyping(c.username) ? ' ⌨' : '';
+      return `${prefix}${c.username}${typing}`;
+    });
+
+    const uptime = this.formatUptime(session.createdAt);
+    const title = `${session.name} | ${users.join(', ')} | ${uptime}`;
+
+    // Set terminal title via OSC escape for all clients in this session
+    const osc = `\x1b]0;claude-proxy: ${title}\x07`;
+    for (const client of session.clients.values()) {
+      client.write(osc);
+    }
+  }
+
+  private formatUptime(created: Date): string {
+    const ms = Date.now() - created.getTime();
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h${mins > 0 ? mins + 'm' : ''}`;
   }
 
   private redrawClient(sessionId: string, client: Client): void {
