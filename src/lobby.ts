@@ -127,7 +127,6 @@ export class Lobby {
 
     if (str === 'n' || str === 'N') return { type: 'new' };
     if (str === 'q' || str === 'Q') return { type: 'quit' };
-
     return { type: 'none' };
   }
 }

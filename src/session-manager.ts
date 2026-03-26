@@ -114,6 +114,9 @@ export class SessionManager {
       onScrollback: () => {
         this.enterScrollback(sessionId, client);
       },
+      onRedraw: () => {
+        this.redrawClient(sessionId, client);
+      },
     });
     session.hotkeys.set(client.id, hotkey);
 
@@ -189,6 +192,19 @@ export class SessionManager {
     if (session) {
       session.onClientDetach = callback;
     }
+  }
+
+  private redrawClient(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Detach, clear screen, re-enter alternate screen, re-attach (replays scrollback)
+    session.pty.detach(client);
+    client.write(enterAltScreen());
+    const contentRows = client.termSize.rows - 2;
+    client.write(setScrollRegion(1, contentRows));
+    session.pty.attach(client);
+    this.refreshStatusBars(sessionId);
   }
 
   getSession(sessionId: string): Session | undefined {
