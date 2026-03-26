@@ -133,6 +133,7 @@ function handleCreationInput(client: Client, data: Buffer): void {
       creationFlow.delete(client.id);
 
       try {
+        console.log(`[create] ${client.username} creating session "${flow.name}" as ${runAsUser}`);
         const session = sessionManager.createSession(flow.name!, client, runAsUser);
         const state = clientState.get(client.id);
         if (state) {
@@ -170,6 +171,7 @@ transport.onConnect((client) => {
   transport.onData(client, (data) => {
     const state = clientState.get(client.id);
     if (!state) return;
+    console.log(`[data] ${client.username} mode=${state.mode} bytes=${data.length} hex=${Array.from(data.slice(0,4)).map(b=>b.toString(16)).join(' ')}`);
 
     if (creationFlow.has(client.id)) {
       handleCreationInput(client, data);
@@ -194,6 +196,7 @@ transport.onConnect((client) => {
           }
           break;
         case 'new':
+          console.log(`[lobby] ${client.username} starting new session flow`);
           startNewSessionFlow(client);
           break;
         case 'refresh':
