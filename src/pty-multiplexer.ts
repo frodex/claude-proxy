@@ -1,6 +1,7 @@
 // src/pty-multiplexer.ts
 
 import { spawn, type IPty } from 'node-pty';
+import { Terminal } from '@xterm/headless';
 import type { Client } from './types.js';
 
 interface PtyOptions {
@@ -19,9 +20,18 @@ export class PtyMultiplexer {
   private scrollback: Buffer[] = [];
   private scrollbackSize = 0;
   private maxScrollback: number;
+  private vterm: Terminal;
 
   constructor(options: PtyOptions) {
     this.maxScrollback = options.scrollbackBytes;
+
+    // Headless xterm for interpreting PTY output into a readable screen buffer
+    this.vterm = new Terminal({
+      cols: options.cols,
+      rows: options.rows,
+      scrollback: 10000,
+      allowProposedApi: true,
+    });
 
     let command = options.command;
     let args = options.args;
@@ -41,6 +51,8 @@ export class PtyMultiplexer {
     this.pty.onData((data: string) => {
       const buf = Buffer.from(data);
       this.appendScrollback(buf);
+      // Feed into virtual terminal for readable scrollback
+      this.vterm.write(data);
       for (const client of this.clients.values()) {
         client.write(buf);
       }
@@ -69,10 +81,12 @@ export class PtyMultiplexer {
 
   resize(cols: number, rows: number): void {
     this.pty.resize(cols, rows);
+    this.vterm.resize(cols, rows);
   }
 
   destroy(): void {
     this.pty.kill();
+    this.vterm.dispose();
     this.clients.clear();
   }
 
@@ -82,6 +96,32 @@ export class PtyMultiplexer {
 
   getScrollbackText(): string {
     return Buffer.concat(this.scrollback).toString();
+  }
+
+  /**
+   * Get the interpreted terminal content as readable text lines.
+   * Uses the headless xterm to produce what a user would actually see,
+   * including scrollback history.
+   */
+  getReadableScrollback(): string {
+    const buffer = this.vterm.buffer.active;
+    const lines: string[] = [];
+
+    // Get all lines including scrollback
+    const totalLines = buffer.length;
+    for (let i = 0; i < totalLines; i++) {
+      const line = buffer.getLine(i);
+      if (line) {
+        lines.push(line.translateToString(true));
+      }
+    }
+
+    // Trim trailing empty lines
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+      lines.pop();
+    }
+
+    return lines.join('\n');
   }
 
   private appendScrollback(data: Buffer): void {

@@ -302,26 +302,10 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Write scrollback to a temp file
+    // Write readable scrollback to a temp file (interpreted by headless xterm)
     const tmpFile = join(tmpdir(), `claude-proxy-scrollback-${randomUUID()}.txt`);
-    const rawContent = session.pty.getScrollbackText();
-
-    // Strip cursor positioning/movement codes but keep color codes
-    // Keep: \e[...m (SGR color/style)
-    // Strip: \e[...H (cursor position), \e[...J (clear screen), \e[...K (clear line),
-    //        \e[...r (scroll region), \e[?...h/l (mode set/reset), \e7/\e8 (save/restore cursor)
-    //        \e[...A/B/C/D (cursor movement), \e[...;...r (scroll region)
-    const content = rawContent
-      .replace(/\x1b\[\?[0-9;]*[hl]/g, '')       // mode set/reset (?25l, ?1049h, etc.)
-      .replace(/\x1b\[[0-9;]*[HABJKCSTPX]/g, '')  // cursor movement, clear screen/line
-      .replace(/\x1b\[[0-9;]*r/g, '')              // scroll regions
-      .replace(/\x1b\[>[0-9;]*[a-zA-Z]/g, '')     // private sequences
-      .replace(/\x1b[78]/g, '')                     // save/restore cursor
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')  // OSC sequences
-      .replace(/\r/g, '')                           // carriage returns
-      .replace(/\n{3,}/g, '\n\n');                  // collapse multiple blank lines
-
-    console.log(`[less] raw: ${rawContent.length} bytes, cleaned: ${content.length} bytes`);
+    const content = session.pty.getReadableScrollback();
+    console.log(`[less] readable scrollback: ${content.length} chars, ${content.split('\n').length} lines`);
     writeFileSync(tmpFile, content);
 
     // Detach from live PTY
