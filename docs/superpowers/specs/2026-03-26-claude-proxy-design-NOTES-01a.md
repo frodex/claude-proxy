@@ -1,4 +1,5 @@
 # claude-proxy — Design Spec
+
 **Date:** 2026-03-26
 **Status:** Draft
 
@@ -95,6 +96,7 @@ Manages the lifecycle of Claude sessions:
 - **List sessions:** returns active sessions with metadata (name, users, created time)
 
 **Run-as user:**
+
 ```javascript
 // Spawns claude as a specific system user
 spawn('su', ['-', targetUser, '-c', 'claude'], { /* pty options */ })
@@ -117,6 +119,7 @@ The core of the system. For each Claude session:
 The proxy composites a status bar onto each client's output independently — it is NOT part of the PTY stream. The proxy reserves the bottom 2 rows of each client's terminal and renders the PTY output into the remaining viewport above.
 
 **Layout:**
+
 ```
 │ bugfix-auth │ [greg] sam alice josh              │
 │             │  ⌨                                  │
@@ -126,24 +129,28 @@ The proxy composites a status bar onto each client's output independently — it
 - **Line 2:** typing indicator for active user(s)
 
 **Presence colors (ANSI):**
+
 - **Orange/yellow (33m):** user is actively typing (any keystroke within last 2 seconds)
 - **Gray (90m):** user is connected but idle
 - **Bracketed + bold `[name]`:** this user is the **size owner** — PTY dimensions match their terminal
 - Colors update in real-time as users type
 
 **Size owner:**
+
 - Defaults to session creator
 - Transferable: `Ctrl+B` then `s` — current user claims size ownership
 - When size owner's terminal resizes, PTY resizes to match
 - Other clients' terminals may wrap or pad — their status bar still renders correctly at THEIR bottom edge
 
 **Typing detection:**
+
 - Proxy tracks last keystroke timestamp per client
 - Any key within last 2 seconds = "typing" (orange)
 - Timeout → idle (gray)
 - No injection into the PTY stream — purely a status bar render
 
 **Rendering approach:**
+
 - Proxy intercepts the PTY output and re-frames it into rows `1` to `client.rows - 2`
 - Rows `client.rows - 1` and `client.rows` are the status bar, rendered per-client
 - Uses ANSI cursor positioning and scrolling regions (`\e[1;{n}r`) to keep the PTY output contained
@@ -212,14 +219,14 @@ lobby:
 
 ## Tech Stack
 
-| Component | Library | Why |
-|-----------|---------|-----|
-| Runtime | Node.js 24 | Already installed |
-| SSH server | `ssh2` | Mature, full SSH2 protocol, key auth |
-| PTY | `node-pty` | Industry standard PTY spawning for Node |
-| Lobby UI | Raw ANSI escape codes | No dependency, full control, works everywhere |
-| Config | `yaml` | Human-readable config file |
-| Process mgmt | systemd | Auto-start, restart on crash |
+| Component    | Library               | Why                                           |
+| ------------ | --------------------- | --------------------------------------------- |
+| Runtime      | Node.js 24            | Already installed                             |
+| SSH server   | `ssh2`                | Mature, full SSH2 protocol, key auth          |
+| PTY          | `node-pty`            | Industry standard PTY spawning for Node       |
+| Lobby UI     | Raw ANSI escape codes | No dependency, full control, works everywhere |
+| Config       | `yaml`                | Human-readable config file                    |
+| Process mgmt | systemd               | Auto-start, restart on crash                  |
 
 ---
 
@@ -251,6 +258,7 @@ claude-proxy/
 ## Phases
 
 ### Phase 1 (Now)
+
 - SSH server with key auth
 - Lobby UI (list, create, join)
 - PTY multiplexer with scrollback
@@ -259,12 +267,13 @@ claude-proxy/
 - Run-as user per session
 - **Status bar with live presence** (gray=idle, orange=typing, [bracketed]=size owner)
 - **Size owner model** — PTY follows size owner's terminal, transferable via `Ctrl+B s`
-- **Session termination** — anyone can `/exit` Claude (free-for-all). Phase 2 restricts to Owner.
-- **Copy/paste transparency** — proxy must not intercept mouse select, Ctrl+C/Ctrl+V, or OSC 52 clipboard sequences. SSH client handles clipboard locally; proxy passes all input/output bytes through untouched (only exception: `Ctrl+B` detach prefix).
 - systemd service
 - Transport abstraction (SSH implementation only)
+- OWNER CAN TERMINATE SESSION - COULD BE AS EASY AS /EXIT <= BUT THIS MEANS ANYONE CAN TERMINATE - FINE FOR NOW.
+- CUT AND PASTE MUST WORK - MOUSE TO SELECT AND PASTE / CTRL-C CTRL-V ALSO
 
 ### Phase 2
+
 - Role system: Owner / Collaborator / Spectator
 - Owner promotion/demotion from within session (hotkey menu)
 - Lobby gates (password-protected sessions, invite-only)
@@ -272,11 +281,11 @@ claude-proxy/
 - Role indicators in status bar (icon or color per role)
 
 ### Phase 3
+
 - WebSocket transport implementation
 - xterm.js web client
 - Shareable URL per session
 - Same role system applies
-- **Voice input** — browser captures mic via Web Speech API, transcribes locally, sends text through WebSocket. No server-side audio processing needed. Raw audio passthrough (option) if Claude Code ever needs the actual audio stream.
 - Optional: session recording/playback
 
 ---
@@ -286,4 +295,3 @@ claude-proxy/
 1. **Session timeout:** No timeout. Sessions live until the `claude` process exits or is explicitly killed.
 2. **Input indicator:** Solved — status bar shows username in orange when typing (last 2s). No PTY stream injection.
 3. **Resize strategy:** Size owner model. One user "owns" the PTY dimensions (default: session creator). Transferable via `Ctrl+B s`. Other clients may wrap/pad but status bar always renders correctly at their own terminal bottom.
-4. **Cloudflare Tunnel compatibility:** Transparent. Cloudflare Tunnel wraps the SSH connection — `ssh2` sees a normal SSH handshake. Just configure the tunnel to point at `localhost:3100` in addition to or instead of port 22. No proxy-side changes needed.
