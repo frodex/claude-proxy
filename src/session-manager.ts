@@ -53,7 +53,7 @@ export class SessionManager {
       command,
       args: [],
       cols: creator.termSize.cols,
-      rows: creator.termSize.rows - 2,
+      rows: creator.termSize.rows,
       scrollbackBytes: this.options.scrollbackBytes,
       runAsUser: user !== (process.env.USER ?? 'root') ? user : undefined,
       onExit: (code) => {
@@ -89,23 +89,15 @@ export class SessionManager {
 
     session.clients.set(client.id, client);
 
-    // Enter alternate screen for clean status bar
-    client.write(enterAltScreen());
-
-    // Set up scroll region on client
-    const contentRows = client.termSize.rows - 2;
-    client.write(setScrollRegion(1, contentRows));
-
-    // Attach to PTY output
+    // Clear screen and attach to PTY output (no alternate screen — native scrolling works)
+    client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
 
     // Set up hotkey handler for this client
     const hotkey = new HotkeyHandler({
       onPassthrough: (data) => {
-        session.statusBar.recordKeystroke(client.username);
         client.lastKeystroke = Date.now();
         session.pty.write(data);
-        this.refreshStatusBars(sessionId);
       },
       onDetach: () => {
         this.leaveSession(sessionId, client);
@@ -143,17 +135,15 @@ export class SessionManager {
     session.hotkeys.get(client.id)?.destroy();
     session.hotkeys.delete(client.id);
 
-    // Leave alternate screen
-    client.write(leaveAltScreen());
+    // Clear screen before returning to lobby
+    client.write('\x1b[2J\x1b[H');
 
     // Transfer size ownership if owner left
     if (session.sizeOwner === client.id && session.clients.size > 0) {
       const nextOwner = session.clients.values().next().value!;
       session.sizeOwner = nextOwner.id;
-      session.pty.resize(nextOwner.termSize.cols, nextOwner.termSize.rows - 2);
+      session.pty.resize(nextOwner.termSize.cols, nextOwner.termSize.rows);
     }
-
-    this.refreshStatusBars(sessionId);
   }
 
   handleInput(sessionId: string, client: Client, data: Buffer): void {
@@ -191,19 +181,7 @@ export class SessionManager {
     client.termSize = size;
 
     if (session.sizeOwner === client.id) {
-      // Resize PTY first, then reset the client view
-      const contentRows = size.rows - 2;
-      session.pty.resize(size.cols, contentRows);
-
-      // Small delay to let Claude process the SIGWINCH, then reset scroll region
-      setTimeout(() => {
-        this.redrawClient(sessionId, client);
-      }, 100);
-    } else {
-      // Non-owner: just update scroll region and status bar
-      const contentRows = size.rows - 2;
-      client.write(setScrollRegion(1, contentRows));
-      this.refreshStatusBars(sessionId);
+      session.pty.resize(size.cols, size.rows);
     }
   }
 
@@ -212,8 +190,7 @@ export class SessionManager {
     if (!session) return;
 
     session.sizeOwner = client.id;
-    session.pty.resize(client.termSize.cols, client.termSize.rows - 2);
-    this.refreshStatusBars(sessionId);
+    session.pty.resize(client.termSize.cols, client.termSize.rows);
   }
 
   setOnClientDetach(sessionId: string, callback: (client: Client) => void): void {
@@ -227,13 +204,10 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Detach, clear screen, re-enter alternate screen, re-attach (replays scrollback)
+    // Detach, clear screen, re-attach (replays scrollback)
     session.pty.detach(client);
-    client.write(enterAltScreen());
-    const contentRows = client.termSize.rows - 2;
-    client.write(setScrollRegion(1, contentRows));
+    client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
-    this.refreshStatusBars(sessionId);
   }
 
   getSession(sessionId: string): Session | undefined {
@@ -287,15 +261,9 @@ export class SessionManager {
 
     session.scrollbackViewers.delete(client.id);
 
-    // Re-enter the session view: alternate screen, scroll region, re-attach
-    client.write(enterAltScreen());
-    const contentRows = client.termSize.rows - 2;
-    client.write(setScrollRegion(1, contentRows));
-
     // Re-attach to PTY (replays scrollback so client sees current state)
+    client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
-
-    this.refreshStatusBars(sessionId);
   }
 
   private async enterLessScrollback(sessionId: string, client: Client): Promise<void> {
@@ -332,10 +300,8 @@ export class SessionManager {
 
     session.dumpMode.delete(client.id);
 
-    // Re-enter alternate screen and session
-    client.write(enterAltScreen());
-    const contentRows = client.termSize.rows - 2;
-    client.write(setScrollRegion(1, contentRows));
+    // Re-attach to session
+    client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
     this.refreshStatusBars(sessionId);
   }
