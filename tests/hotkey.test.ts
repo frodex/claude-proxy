@@ -10,6 +10,7 @@ test('passes through normal input', () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
   });
 
   handler.feed(Buffer.from('hello'));
@@ -27,6 +28,7 @@ test('Ctrl+B then d triggers detach', () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -46,6 +48,7 @@ test('Ctrl+B then s triggers claimSize', () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -63,6 +66,7 @@ test('Ctrl+B then unknown key passes both through', () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -81,6 +85,7 @@ test('Ctrl+B Ctrl+B passes single Ctrl+B through', () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -99,6 +104,7 @@ test('Ctrl+B timeout passes Ctrl+B through', async () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
     timeoutMs: 50,
   });
 
@@ -120,6 +126,7 @@ test('Ctrl+B then h triggers scrollback', () => {
     onScrollback: () => results.push({ type: 'scrollback' }),
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
+    onHelp: () => results.push({ type: 'help' }),
   });
 
   handler.feed(Buffer.from('\x02'));

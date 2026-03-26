@@ -9,6 +9,7 @@ interface HotkeyCallbacks {
   onScrollback: () => void;
   onRedraw: () => void;
   onLessScrollback: () => void;
+  onHelp: () => void;
   timeoutMs?: number;
 }
 
@@ -44,6 +45,10 @@ export class HotkeyHandler {
         }
         if (byte === 0x72) {  // 'r'
           this.callbacks.onRedraw();
+          return;
+        }
+        if (byte === 0x3f) {  // '?'
+          this.callbacks.onHelp();
           return;
         }
         if (byte === 0x6c) {  // 'l'

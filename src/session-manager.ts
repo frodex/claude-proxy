@@ -118,6 +118,9 @@ export class SessionManager {
       onLessScrollback: () => {
         this.enterLessScrollback(sessionId, client);
       },
+      onHelp: () => {
+        this.showHelp(sessionId, client);
+      },
     });
     session.hotkeys.set(client.id, hotkey);
 
@@ -202,6 +205,48 @@ export class SessionManager {
     if (session) {
       session.onClientDetach = callback;
     }
+  }
+
+  private showHelp(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Detach from PTY while showing help
+    session.pty.detach(client);
+    session.dumpMode.add(client.id);
+
+    const help = [
+      '',
+      '  \x1b[1mclaude-proxy help\x1b[0m',
+      '  ─────────────────────────────────────',
+      '',
+      '  \x1b[1mIn session:\x1b[0m  (press Ctrl+B, release, then key)',
+      '',
+      '    Ctrl+B  d     Detach (back to lobby)',
+      '    Ctrl+B  s     Claim size ownership',
+      '    Ctrl+B  r     Redraw screen',
+      '    Ctrl+B  l     Scrollback dump (use terminal scrollbar)',
+      '    Ctrl+B  h     Scrollback viewer (arrows/pgup/pgdn)',
+      '    Ctrl+B  ?     This help',
+      '    Ctrl+B  Ctrl+B   Send literal Ctrl+B',
+      '',
+      '  \x1b[1mIn lobby:\x1b[0m',
+      '',
+      '    n         New session',
+      '    r         Refresh',
+      '    q         Quit',
+      '    Up/Down   Navigate sessions',
+      '    Enter/1-9 Join session',
+      '',
+      '  \x1b[1mTitle bar:\x1b[0m  session name | *owner, users | uptime',
+      '',
+      '  ─────────────────────────────────────',
+      '  \x1b[7m Press any key to return \x1b[0m',
+      '',
+    ];
+
+    client.write('\x1b[2J\x1b[H');
+    client.write(help.join('\r\n'));
   }
 
   private updateTitle(sessionId: string): void {
