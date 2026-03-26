@@ -190,8 +190,12 @@ export class SessionManager {
 
     client.termSize = size;
 
+    // Update scroll region for this client
+    const contentRows = size.rows - 2;
+    client.write(setScrollRegion(1, contentRows));
+
     if (session.sizeOwner === client.id) {
-      session.pty.resize(size.cols, size.rows - 2);
+      session.pty.resize(size.cols, contentRows);
     }
 
     this.refreshStatusBars(sessionId);
