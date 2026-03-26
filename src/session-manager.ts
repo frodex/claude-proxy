@@ -55,7 +55,8 @@ export class SessionManager {
       rows: creator.termSize.rows - 2,
       scrollbackBytes: this.options.scrollbackBytes,
       runAsUser: user !== (process.env.USER ?? 'root') ? user : undefined,
-      onExit: () => {
+      onExit: (code) => {
+        console.log(`[session-exit] "${name}" (${id}) exited with code ${code}`);
         this.destroySession(id);
         this.onSessionEndCallback?.(id);
       },
@@ -126,6 +127,7 @@ export class SessionManager {
   leaveSession(sessionId: string, client: Client): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    console.log(`[leave] ${client.username} left "${session.name}" (${session.clients.size - 1} remaining)`);
 
     // Exit scrollback if active
     session.scrollbackViewers.delete(client.id);
