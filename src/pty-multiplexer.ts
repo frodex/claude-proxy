@@ -1,7 +1,8 @@
 // src/pty-multiplexer.ts
 
 import { spawn, type IPty } from 'node-pty';
-import { Terminal } from '@xterm/headless';
+import xtermHeadless from '@xterm/headless';
+const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
 
 interface PtyOptions {
@@ -20,7 +21,7 @@ export class PtyMultiplexer {
   private scrollback: Buffer[] = [];
   private scrollbackSize = 0;
   private maxScrollback: number;
-  private vterm: Terminal;
+  private vterm: InstanceType<typeof Terminal>;
 
   constructor(options: PtyOptions) {
     this.maxScrollback = options.scrollbackBytes;
@@ -102,26 +103,31 @@ export class PtyMultiplexer {
    * Get the interpreted terminal content as readable text lines.
    * Uses the headless xterm to produce what a user would actually see,
    * including scrollback history.
+   * Returns a Promise because xterm.write() is async — we flush pending writes first.
    */
-  getReadableScrollback(): string {
-    const buffer = this.vterm.buffer.active;
-    const lines: string[] = [];
+  getReadableScrollback(): Promise<string> {
+    return new Promise((resolve) => {
+      // Write an empty string with callback to flush pending writes
+      this.vterm.write('', () => {
+        const buffer = this.vterm.buffer.active;
+        const lines: string[] = [];
 
-    // Get all lines including scrollback
-    const totalLines = buffer.length;
-    for (let i = 0; i < totalLines; i++) {
-      const line = buffer.getLine(i);
-      if (line) {
-        lines.push(line.translateToString(true));
-      }
-    }
+        const totalLines = buffer.length;
+        for (let i = 0; i < totalLines; i++) {
+          const line = buffer.getLine(i);
+          if (line) {
+            lines.push(line.translateToString(true));
+          }
+        }
 
-    // Trim trailing empty lines
-    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
-      lines.pop();
-    }
+        // Trim trailing empty lines
+        while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+          lines.pop();
+        }
 
-    return lines.join('\n');
+        resolve(lines.join('\n'));
+      });
+    });
   }
 
   private appendScrollback(data: Buffer): void {

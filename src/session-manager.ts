@@ -298,13 +298,13 @@ export class SessionManager {
     this.refreshStatusBars(sessionId);
   }
 
-  private enterLessScrollback(sessionId: string, client: Client): void {
+  private async enterLessScrollback(sessionId: string, client: Client): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
     // Write readable scrollback to a temp file (interpreted by headless xterm)
     const tmpFile = join(tmpdir(), `claude-proxy-scrollback-${randomUUID()}.txt`);
-    const content = session.pty.getReadableScrollback();
+    const content = await session.pty.getReadableScrollback();
     console.log(`[less] readable scrollback: ${content.length} chars, ${content.split('\n').length} lines`);
     writeFileSync(tmpFile, content);
 
