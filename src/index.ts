@@ -196,6 +196,9 @@ transport.onConnect((client) => {
         case 'new':
           startNewSessionFlow(client);
           break;
+        case 'refresh':
+          showLobby(client);
+          break;
         case 'quit':
           client.write('\r\nGoodbye!\r\n');
           break;

@@ -25,6 +25,7 @@ type InputResult =
   | { type: 'join'; selectedIndex: number }
   | { type: 'new' }
   | { type: 'quit' }
+  | { type: 'refresh' }
   | { type: 'none' };
 
 export class Lobby {
@@ -77,6 +78,7 @@ export class Lobby {
 
     line('');
     line(`  ${color('[n]', 33)} New session`);
+    line(`  ${color('[r]', 33)} Refresh`);
     line(`  ${color('[q]', 33)} Quit`);
     line('');
     line(color('─'.repeat(Math.min(cols - 6, 50)), 90));
@@ -119,6 +121,7 @@ export class Lobby {
 
     if (str === 'n' || str === 'N') return { type: 'new' };
     if (str === 'q' || str === 'Q') return { type: 'quit' };
+    if (str === 'r' || str === 'R') return { type: 'refresh' };
 
     return { type: 'none' };
   }

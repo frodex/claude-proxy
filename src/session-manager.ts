@@ -306,7 +306,10 @@ export class SessionManager {
     const tmpFile = join(tmpdir(), `claude-proxy-scrollback-${randomUUID()}.txt`);
     const content = await session.pty.getReadableScrollback();
     console.log(`[less] readable scrollback: ${content.length} chars, ${content.split('\n').length} lines`);
+    // Also write a debug copy that doesn't get deleted
+    writeFileSync('/tmp/claude-proxy-scrollback-debug.txt', content);
     writeFileSync(tmpFile, content);
+    console.log(`[less] wrote ${tmpFile}`);
 
     // Detach from live PTY
     session.pty.detach(client);
