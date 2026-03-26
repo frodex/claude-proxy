@@ -38,61 +38,53 @@ export class Lobby {
     const { username, sessions, selectedIndex, cols, rows } = options;
     const parts: string[] = [];
 
+    // Clear screen
     parts.push('\x1b[2J');
     parts.push(hideCursor());
-    parts.push(moveTo(1, 1));
 
-    const width = Math.min(cols - 4, 56);
-    const hr = '═'.repeat(width);
-    const pad = (text: string) => {
-      const visible = text.replace(/\x1b\[[0-9;]*m/g, '');
-      const remaining = width - 2 - visible.length;
-      return `║ ${text}${' '.repeat(Math.max(0, remaining))} ║`;
+    // Use simple line-by-line rendering with moveTo for each line
+    let row = 2;
+
+    const line = (text: string) => {
+      parts.push(moveTo(row, 3));
+      parts.push(clearLine());
+      parts.push(text);
+      row++;
     };
 
-    parts.push(`╔${hr}╗\n`);
-    parts.push(pad(color('claude-proxy', 1)));
-    parts.push('\r\n');
-    parts.push(pad(`Connected as: ${color(username, 36)}`));
-    parts.push('\r\n');
-    parts.push(`╠${hr}╣\n`);
-    parts.push(pad(''));
-    parts.push('\r\n');
+    line(color('claude-proxy', 1));
+    line(`Connected as: ${color(username, 36)}`);
+    line('');
+    line(color('─'.repeat(Math.min(cols - 6, 50)), 90));
+    line('');
 
     if (sessions.length === 0) {
-      parts.push(pad('  No active sessions'));
-      parts.push('\r\n');
+      line('  No active sessions');
     } else {
-      parts.push(pad(color('  Active Sessions:', 1)));
-      parts.push('\r\n');
+      line(color('  Active Sessions:', 1));
+      line('');
 
       for (let i = 0; i < sessions.length; i++) {
         const s = sessions[i];
-        const arrow = i === selectedIndex ? '▸' : ' ';
+        const arrow = i === selectedIndex ? color('>', 33) : ' ';
         const userCount = s.clients.size;
         const userWord = userCount === 1 ? 'user' : 'users';
         const userNames = Array.from(s.clients.values()).map(c => c.username).join(', ');
-        const line = `  ${arrow} ${i + 1}. ${s.name} (${userCount} ${userWord}) [${userNames}]`;
-        parts.push(pad(i === selectedIndex ? color(line, 1) : line));
-        parts.push('\r\n');
+        const entry = `  ${arrow} ${i + 1}. ${s.name} (${userCount} ${userWord}) [${userNames}]`;
+        line(i === selectedIndex ? color(entry, 1) : entry);
       }
     }
 
-    parts.push(pad(''));
-    parts.push('\r\n');
-    parts.push(pad(`  ${color('[n]', 33)} New session`));
-    parts.push('\r\n');
-    parts.push(pad(`  ${color('[q]', 33)} Quit`));
-    parts.push('\r\n');
-    parts.push(pad(''));
-    parts.push('\r\n');
+    line('');
+    line(`  ${color('[n]', 33)} New session`);
+    line(`  ${color('[q]', 33)} Quit`);
+    line('');
+    line(color('─'.repeat(Math.min(cols - 6, 50)), 90));
 
     if (this.motd) {
-      parts.push(pad(color(this.motd, 90)));
-      parts.push('\r\n');
+      line('');
+      line(color(this.motd, 90));
     }
-
-    parts.push(`╚${hr}╝\n`);
 
     return parts.join('');
   }
@@ -112,7 +104,7 @@ export class Lobby {
       return { type: 'navigate', selectedIndex: next };
     }
 
-    if (str === '\r' || str === '\r\n') {
+    if (str === '\r' || str === '\n') {
       if (state.sessionCount === 0) return { type: 'none' };
       return { type: 'join', selectedIndex: state.selectedIndex };
     }
@@ -127,6 +119,7 @@ export class Lobby {
 
     if (str === 'n' || str === 'N') return { type: 'new' };
     if (str === 'q' || str === 'Q') return { type: 'quit' };
+
     return { type: 'none' };
   }
 }

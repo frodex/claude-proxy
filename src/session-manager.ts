@@ -161,6 +161,11 @@ export class SessionManager {
       return;
     }
 
+    // Debug: log raw input bytes
+    if (data.length <= 4) {
+      console.log(`[input] ${client.username}: ${Array.from(data).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}`);
+    }
+
     const hotkey = session.hotkeys.get(client.id);
     if (hotkey) {
       hotkey.feed(data);
