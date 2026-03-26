@@ -1,0 +1,15 @@
+[Unit]
+Description=claude-proxy SSH multiplexer
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/srv/claude-proxy
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
