@@ -190,15 +190,21 @@ export class SessionManager {
 
     client.termSize = size;
 
-    // Update scroll region for this client
-    const contentRows = size.rows - 2;
-    client.write(setScrollRegion(1, contentRows));
-
     if (session.sizeOwner === client.id) {
+      // Resize PTY first, then reset the client view
+      const contentRows = size.rows - 2;
       session.pty.resize(size.cols, contentRows);
-    }
 
-    this.refreshStatusBars(sessionId);
+      // Small delay to let Claude process the SIGWINCH, then reset scroll region
+      setTimeout(() => {
+        this.redrawClient(sessionId, client);
+      }, 100);
+    } else {
+      // Non-owner: just update scroll region and status bar
+      const contentRows = size.rows - 2;
+      client.write(setScrollRegion(1, contentRows));
+      this.refreshStatusBars(sessionId);
+    }
   }
 
   claimSizeOwner(sessionId: string, client: Client): void {
