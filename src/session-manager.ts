@@ -316,7 +316,7 @@ export class SessionManager {
 
     // Spawn less in a new PTY attached to the client
     console.log(`[less] spawning less for ${client.username} (${client.termSize.cols}x${client.termSize.rows})`);
-    const lessPty = ptySpawn('less', ['-R', '--mouse', '--wheel-lines=3', tmpFile], {
+    const lessPty = ptySpawn('less', ['-RS', '--mouse', '--wheel-lines=3', tmpFile], {
       name: 'xterm-256color',
       cols: client.termSize.cols,
       rows: client.termSize.rows,

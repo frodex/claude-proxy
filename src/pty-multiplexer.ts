@@ -107,7 +107,6 @@ export class PtyMultiplexer {
    */
   getReadableScrollback(): Promise<string> {
     return new Promise((resolve) => {
-      // Write an empty string with callback to flush pending writes
       this.vterm.write('', () => {
         const buffer = this.vterm.buffer.active;
         const lines: string[] = [];
@@ -116,7 +115,17 @@ export class PtyMultiplexer {
         for (let i = 0; i < totalLines; i++) {
           const line = buffer.getLine(i);
           if (line) {
-            lines.push(line.translateToString(true));
+            let text = line.translateToString(true);
+            // Replace box-drawing chars with ASCII equivalents
+            text = text
+              .replace(/[╭╮┌┐]/g, '+')
+              .replace(/[╰╯└┘]/g, '+')
+              .replace(/[│║▐▌]/g, '|')
+              .replace(/[─═]/g, '-')
+              .replace(/[├┤╠╣┬┴╦╩┼╬]/g, '+')
+              .replace(/[▛▜▝▘░▸⎿]/g, ' ')
+              .replace(/[❯●⌨]/g, ' ');
+            lines.push(text);
           }
         }
 
@@ -125,7 +134,9 @@ export class PtyMultiplexer {
           lines.pop();
         }
 
-        resolve(lines.join('\n'));
+        // Collapse runs of 3+ blank lines into 2
+        const result = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+        resolve(result);
       });
     });
   }
