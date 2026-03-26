@@ -147,6 +147,7 @@ export class SSHTransport implements Transport {
 
           session.on('window-change', (accept, reject, info) => {
             if (typeof accept === 'function') accept();
+            console.log(`[resize] ${username}: ${info.cols}x${info.rows}`);
             if (client) {
               client.termSize = { cols: info.cols, rows: info.rows };
               this.resizeCallbacks.get(clientId)?.({ cols: info.cols, rows: info.rows });
