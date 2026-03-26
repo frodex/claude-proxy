@@ -1,10 +1,6 @@
 // src/session-manager.ts
 
 import { randomUUID } from 'crypto';
-import { spawn as ptySpawn } from 'node-pty';
-import { writeFileSync, unlinkSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
@@ -23,7 +19,7 @@ interface ManagedSession extends Session {
   statusBar: StatusBar;
   hotkeys: Map<string, HotkeyHandler>;
   scrollbackViewers: Map<string, ScrollbackViewer>;
-  lessPtys: Map<string, { pty: ReturnType<typeof ptySpawn>; tmpFile: string }>;
+  dumpMode: Set<string>;  // client IDs in scrollback dump mode
   onClientDetach?: (client: Client) => void;
 }
 
@@ -78,7 +74,7 @@ export class SessionManager {
       statusBar: new StatusBar(),
       hotkeys: new Map(),
       scrollbackViewers: new Map(),
-      lessPtys: new Map(),
+      dumpMode: new Set(),
     };
 
     this.sessions.set(id, session);
@@ -140,12 +136,7 @@ export class SessionManager {
 
     // Exit scrollback if active
     session.scrollbackViewers.delete(client.id);
-    const lessPty = session.lessPtys.get(client.id);
-    if (lessPty) {
-      lessPty.pty.kill();
-      try { unlinkSync(lessPty.tmpFile); } catch {}
-      session.lessPtys.delete(client.id);
-    }
+    session.dumpMode.delete(client.id);
 
     session.pty.detach(client);
     session.clients.delete(client.id);
@@ -169,10 +160,9 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // If client is in less scrollback mode, route input to less PTY
-    const lessPty = session.lessPtys.get(client.id);
-    if (lessPty) {
-      lessPty.pty.write(data.toString());
+    // If client is in scrollback dump mode, any key returns to session
+    if (session.dumpMode.has(client.id)) {
+      this.exitLessScrollback(sessionId, client);
       return;
     }
 
@@ -302,46 +292,37 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Write readable scrollback to a temp file (interpreted by headless xterm)
-    const tmpFile = join(tmpdir(), `claude-proxy-scrollback-${randomUUID()}.txt`);
     const content = await session.pty.getReadableScrollback();
-    console.log(`[less] readable scrollback: ${content.length} chars, ${content.split('\n').length} lines`);
-    // Also write a debug copy that doesn't get deleted
-    writeFileSync('/tmp/claude-proxy-scrollback-debug.txt', content);
-    writeFileSync(tmpFile, content);
-    console.log(`[less] wrote ${tmpFile}`);
+    console.log(`[scrolldump] ${content.length} chars, ${content.split('\n').length} lines`);
 
     // Detach from live PTY
     session.pty.detach(client);
 
-    // Spawn less in a new PTY attached to the client
-    console.log(`[less] spawning less for ${client.username} (${client.termSize.cols}x${client.termSize.rows})`);
-    const lessPty = ptySpawn('less', ['-RS', '--mouse', '--wheel-lines=3', tmpFile], {
-      name: 'xterm-256color',
-      cols: client.termSize.cols,
-      rows: client.termSize.rows,
-      env: { ...process.env as Record<string, string>, TERM: 'xterm-256color', LESSCHARSET: 'utf-8' },
-    });
+    // Leave alternate screen so PuTTY's native scrollback works
+    client.write(leaveAltScreen());
 
-    lessPty.onData((data: string) => {
-      client.write(data);
-    });
+    // Clear screen and dump content as plain text
+    client.write('\x1b[2J\x1b[H');
+    // Write line by line with \r\n for proper rendering
+    const lines = content.split('\n');
+    for (const line of lines) {
+      client.write(line + '\r\n');
+    }
 
-    lessPty.onExit(({ exitCode }) => {
-      console.log(`[less] exited with code ${exitCode} for ${client.username}`);
-      try { unlinkSync(tmpFile); } catch {}
-      session.lessPtys.delete(client.id);
-      this.exitLessScrollback(sessionId, client);
-    });
+    // Separator and prompt
+    client.write('\r\n\x1b[7m === SCROLLBACK DUMP === Scroll up with PuTTY scrollbar or Shift+PgUp === Press any key to return === \x1b[0m');
 
-    session.lessPtys.set(client.id, { pty: lessPty, tmpFile });
+    // Mark client as in "dump" mode — next keypress returns to session
+    session.dumpMode.add(client.id);
   }
 
   private exitLessScrollback(sessionId: string, client: Client): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Re-enter the session view
+    session.dumpMode.delete(client.id);
+
+    // Re-enter alternate screen and session
     client.write(enterAltScreen());
     const contentRows = client.termSize.rows - 2;
     client.write(setScrollRegion(1, contentRows));
