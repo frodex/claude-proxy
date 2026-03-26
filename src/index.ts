@@ -160,6 +160,7 @@ function handleCreationInput(client: Client, data: Buffer): void {
 }
 
 transport.onConnect((client) => {
+  console.log(`[connect] ${client.username} (${client.termSize.cols}x${client.termSize.rows})`);
   clientState.set(client.id, {
     mode: 'lobby',
     selectedIndex: 0,

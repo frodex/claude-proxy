@@ -52,19 +52,19 @@ export class Lobby {
 
     parts.push(`╔${hr}╗\n`);
     parts.push(pad(color('claude-proxy', 1)));
-    parts.push('\n');
+    parts.push('\r\n');
     parts.push(pad(`Connected as: ${color(username, 36)}`));
-    parts.push('\n');
+    parts.push('\r\n');
     parts.push(`╠${hr}╣\n`);
     parts.push(pad(''));
-    parts.push('\n');
+    parts.push('\r\n');
 
     if (sessions.length === 0) {
       parts.push(pad('  No active sessions'));
-      parts.push('\n');
+      parts.push('\r\n');
     } else {
       parts.push(pad(color('  Active Sessions:', 1)));
-      parts.push('\n');
+      parts.push('\r\n');
 
       for (let i = 0; i < sessions.length; i++) {
         const s = sessions[i];
@@ -74,22 +74,22 @@ export class Lobby {
         const userNames = Array.from(s.clients.values()).map(c => c.username).join(', ');
         const line = `  ${arrow} ${i + 1}. ${s.name} (${userCount} ${userWord}) [${userNames}]`;
         parts.push(pad(i === selectedIndex ? color(line, 1) : line));
-        parts.push('\n');
+        parts.push('\r\n');
       }
     }
 
     parts.push(pad(''));
-    parts.push('\n');
+    parts.push('\r\n');
     parts.push(pad(`  ${color('[n]', 33)} New session`));
-    parts.push('\n');
+    parts.push('\r\n');
     parts.push(pad(`  ${color('[q]', 33)} Quit`));
-    parts.push('\n');
+    parts.push('\r\n');
     parts.push(pad(''));
-    parts.push('\n');
+    parts.push('\r\n');
 
     if (this.motd) {
       parts.push(pad(color(this.motd, 90)));
-      parts.push('\n');
+      parts.push('\r\n');
     }
 
     parts.push(`╚${hr}╝\n`);
@@ -112,7 +112,7 @@ export class Lobby {
       return { type: 'navigate', selectedIndex: next };
     }
 
-    if (str === '\r' || str === '\n') {
+    if (str === '\r' || str === '\r\n') {
       if (state.sessionCount === 0) return { type: 'none' };
       return { type: 'join', selectedIndex: state.selectedIndex };
     }
