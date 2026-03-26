@@ -1,6 +1,10 @@
 // src/session-manager.ts
 
 import { randomUUID } from 'crypto';
+import { spawn as ptySpawn } from 'node-pty';
+import { writeFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
@@ -19,6 +23,7 @@ interface ManagedSession extends Session {
   statusBar: StatusBar;
   hotkeys: Map<string, HotkeyHandler>;
   scrollbackViewers: Map<string, ScrollbackViewer>;
+  lessPtys: Map<string, { pty: ReturnType<typeof ptySpawn>; tmpFile: string }>;
   onClientDetach?: (client: Client) => void;
 }
 
@@ -73,6 +78,7 @@ export class SessionManager {
       statusBar: new StatusBar(),
       hotkeys: new Map(),
       scrollbackViewers: new Map(),
+      lessPtys: new Map(),
     };
 
     this.sessions.set(id, session);
@@ -118,6 +124,9 @@ export class SessionManager {
       onRedraw: () => {
         this.redrawClient(sessionId, client);
       },
+      onLessScrollback: () => {
+        this.enterLessScrollback(sessionId, client);
+      },
     });
     session.hotkeys.set(client.id, hotkey);
 
@@ -131,6 +140,12 @@ export class SessionManager {
 
     // Exit scrollback if active
     session.scrollbackViewers.delete(client.id);
+    const lessPty = session.lessPtys.get(client.id);
+    if (lessPty) {
+      lessPty.pty.kill();
+      try { unlinkSync(lessPty.tmpFile); } catch {}
+      session.lessPtys.delete(client.id);
+    }
 
     session.pty.detach(client);
     session.clients.delete(client.id);
@@ -153,6 +168,13 @@ export class SessionManager {
   handleInput(sessionId: string, client: Client, data: Buffer): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+
+    // If client is in less scrollback mode, route input to less PTY
+    const lessPty = session.lessPtys.get(client.id);
+    if (lessPty) {
+      lessPty.pty.write(data.toString());
+      return;
+    }
 
     // If client is in scrollback mode, route input there
     const viewer = session.scrollbackViewers.get(client.id);
@@ -273,6 +295,51 @@ export class SessionManager {
     // Re-attach to PTY (replays scrollback so client sees current state)
     session.pty.attach(client);
 
+    this.refreshStatusBars(sessionId);
+  }
+
+  private enterLessScrollback(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Write scrollback to a temp file
+    const tmpFile = join(tmpdir(), `claude-proxy-scrollback-${randomUUID()}.txt`);
+    const content = session.pty.getScrollbackText();
+    writeFileSync(tmpFile, content);
+
+    // Detach from live PTY
+    session.pty.detach(client);
+
+    // Spawn less -R in a new PTY attached to the client
+    const lessPty = ptySpawn('less', ['-R', '+G', tmpFile], {
+      name: 'xterm-256color',
+      cols: client.termSize.cols,
+      rows: client.termSize.rows,
+      env: { ...process.env as Record<string, string>, TERM: 'xterm-256color' },
+    });
+
+    lessPty.onData((data: string) => {
+      client.write(data);
+    });
+
+    lessPty.onExit(() => {
+      try { unlinkSync(tmpFile); } catch {}
+      session.lessPtys.delete(client.id);
+      this.exitLessScrollback(sessionId, client);
+    });
+
+    session.lessPtys.set(client.id, { pty: lessPty, tmpFile });
+  }
+
+  private exitLessScrollback(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Re-enter the session view
+    client.write(enterAltScreen());
+    const contentRows = client.termSize.rows - 2;
+    client.write(setScrollRegion(1, contentRows));
+    session.pty.attach(client);
     this.refreshStatusBars(sessionId);
   }
 

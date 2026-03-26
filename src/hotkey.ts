@@ -8,6 +8,7 @@ interface HotkeyCallbacks {
   onClaimSize: () => void;
   onScrollback: () => void;
   onRedraw: () => void;
+  onLessScrollback: () => void;
   timeoutMs?: number;
 }
 
@@ -43,6 +44,10 @@ export class HotkeyHandler {
         }
         if (byte === 0x72) {  // 'r'
           this.callbacks.onRedraw();
+          return;
+        }
+        if (byte === 0x6c) {  // 'l'
+          this.callbacks.onLessScrollback();
           return;
         }
         if (byte === CTRL_B) {  // Ctrl+B again — pass single Ctrl+B
