@@ -80,6 +80,10 @@ export class PtyMultiplexer {
     return this.clients.size;
   }
 
+  getScrollbackText(): string {
+    return Buffer.concat(this.scrollback).toString();
+  }
+
   private appendScrollback(data: Buffer): void {
     this.scrollback.push(data);
     this.scrollbackSize += data.length;

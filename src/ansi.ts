@@ -31,3 +31,11 @@ export function hideCursor(): string {
 export function showCursor(): string {
   return '\x1b[?25h';
 }
+
+export function enterAltScreen(): string {
+  return '\x1b[?1049h';
+}
+
+export function leaveAltScreen(): string {
+  return '\x1b[?1049l';
+}

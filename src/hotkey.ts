@@ -6,6 +6,7 @@ interface HotkeyCallbacks {
   onPassthrough: (data: Buffer) => void;
   onDetach: () => void;
   onClaimSize: () => void;
+  onScrollback: () => void;
   timeoutMs?: number;
 }
 
@@ -33,6 +34,10 @@ export class HotkeyHandler {
         }
         if (byte === 0x73) {  // 's'
           this.callbacks.onClaimSize();
+          return;
+        }
+        if (byte === 0x68) {  // 'h'
+          this.callbacks.onScrollback();
           return;
         }
         if (byte === CTRL_B) {  // Ctrl+B again — pass single Ctrl+B

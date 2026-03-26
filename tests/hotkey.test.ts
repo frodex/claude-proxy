@@ -7,6 +7,7 @@ test('passes through normal input', () => {
     onPassthrough: (data) => results.push({ type: 'passthrough', data }),
     onDetach: () => results.push({ type: 'detach' }),
     onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
   });
 
   handler.feed(Buffer.from('hello'));
@@ -21,6 +22,7 @@ test('Ctrl+B then d triggers detach', () => {
     onPassthrough: (data) => results.push({ type: 'passthrough' }),
     onDetach: () => results.push({ type: 'detach' }),
     onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -37,6 +39,7 @@ test('Ctrl+B then s triggers claimSize', () => {
     onPassthrough: (data) => results.push({ type: 'passthrough' }),
     onDetach: () => results.push({ type: 'detach' }),
     onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -51,6 +54,7 @@ test('Ctrl+B then unknown key passes both through', () => {
     onPassthrough: (data) => results.push({ type: 'passthrough', data }),
     onDetach: () => results.push({ type: 'detach' }),
     onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -66,6 +70,7 @@ test('Ctrl+B Ctrl+B passes single Ctrl+B through', () => {
     onPassthrough: (data) => results.push({ type: 'passthrough', data }),
     onDetach: () => results.push({ type: 'detach' }),
     onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -81,6 +86,7 @@ test('Ctrl+B timeout passes Ctrl+B through', async () => {
     onPassthrough: (data) => results.push({ type: 'passthrough', data }),
     onDetach: () => results.push({ type: 'detach' }),
     onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
     timeoutMs: 50,
   });
 
@@ -91,4 +97,19 @@ test('Ctrl+B timeout passes Ctrl+B through', async () => {
   expect(results).toHaveLength(1);
   expect(results[0].type).toBe('passthrough');
   expect(results[0].data!.toString()).toBe('\x02');
+});
+
+test('Ctrl+B then h triggers scrollback', () => {
+  const results: Array<{ type: string }> = [];
+  const handler = new HotkeyHandler({
+    onPassthrough: () => results.push({ type: 'passthrough' }),
+    onDetach: () => results.push({ type: 'detach' }),
+    onClaimSize: () => results.push({ type: 'claimSize' }),
+    onScrollback: () => results.push({ type: 'scrollback' }),
+  });
+
+  handler.feed(Buffer.from('\x02'));
+  handler.feed(Buffer.from('h'));
+  expect(results).toHaveLength(1);
+  expect(results[0].type).toBe('scrollback');
 });
