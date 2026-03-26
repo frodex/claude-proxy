@@ -1,0 +1,13 @@
+port: 3100
+host: 0.0.0.0
+
+auth:
+  authorized_keys: ~/.ssh/authorized_keys
+
+sessions:
+  default_user: root
+  scrollback_bytes: 1048576
+  max_sessions: 10
+
+lobby:
+  motd: "Welcome to claude-proxy"
