@@ -314,19 +314,21 @@ export class SessionManager {
     // Detach from live PTY
     session.pty.detach(client);
 
-    // Spawn less -R in a new PTY attached to the client
-    const lessPty = ptySpawn('less', ['-R', '+G', tmpFile], {
+    // Spawn less in a new PTY attached to the client
+    console.log(`[less] spawning less for ${client.username} (${client.termSize.cols}x${client.termSize.rows})`);
+    const lessPty = ptySpawn('less', ['-R', '--mouse', '--wheel-lines=3', tmpFile], {
       name: 'xterm-256color',
       cols: client.termSize.cols,
       rows: client.termSize.rows,
-      env: { ...process.env as Record<string, string>, TERM: 'xterm-256color' },
+      env: { ...process.env as Record<string, string>, TERM: 'xterm-256color', LESSCHARSET: 'utf-8' },
     });
 
     lessPty.onData((data: string) => {
       client.write(data);
     });
 
-    lessPty.onExit(() => {
+    lessPty.onExit(({ exitCode }) => {
+      console.log(`[less] exited with code ${exitCode} for ${client.username}`);
       try { unlinkSync(tmpFile); } catch {}
       session.lessPtys.delete(client.id);
       this.exitLessScrollback(sessionId, client);
