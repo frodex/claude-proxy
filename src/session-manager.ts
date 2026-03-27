@@ -334,18 +334,18 @@ export class SessionManager {
       title: 'Session actions',
       items: [
         { label: 'Back to session', key: 'esc', action: 'back' },
-        { label: 'Detach (back to lobby)', key: 'd', action: 'detach' },
-        { label: 'Claim size ownership', key: 's', action: 'claimSize' },
-        { label: 'Redraw screen', key: 'r', action: 'redraw' },
-        { label: 'Scrollback dump (terminal scrollbar)', key: 'l', action: 'scrolldump' },
-        { label: 'Scrollback viewer (arrows/pgup/pgdn)', key: 'b', action: 'scrollview' },
+        { label: 'Detach (back to lobby)', key: 'd', hint: 'Ctrl-B d', action: 'detach' },
+        { label: 'Claim size ownership', key: 's', hint: 'Ctrl-B s', action: 'claimSize' },
+        { label: 'Redraw screen', key: 'r', hint: 'Ctrl-B r', action: 'redraw' },
+        { label: 'Scrollback dump', key: 'l', hint: 'Ctrl-B l — use terminal scrollbar', action: 'scrolldump' },
+        { label: 'Scrollback viewer', key: 'b', hint: 'Ctrl-B b — arrows/pgup/pgdn', action: 'scrollview' },
       ],
     },
     {
       title: 'Info',
       items: [
-        { label: 'Title bar: session | *owner, users | uptime', action: 'none', disabled: true },
-        { label: 'Sessions persist across proxy restarts', action: 'none', disabled: true },
+        { label: 'Title bar shows: session | *owner, users | uptime', action: 'none', disabled: true },
+        { label: 'Sessions persist across proxy restarts (tmux-backed)', action: 'none', disabled: true },
       ],
     },
   ];

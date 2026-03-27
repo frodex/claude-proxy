@@ -4,7 +4,8 @@ import { color } from './ansi.js';
 
 export interface MenuItem {
   label: string;
-  key?: string;        // shortcut key (optional)
+  key?: string;        // shortcut key shown in yellow before label
+  hint?: string;       // terminal keystroke hint shown in gray after label
   action: string;      // action identifier returned on select
   disabled?: boolean;  // grayed out, not selectable
 }
@@ -25,9 +26,9 @@ export function renderMenu(options: MenuOptions): string {
   const { title, sections, footer, cursor } = options;
   const parts: string[] = [];
 
-  parts.push('\x1b[2J\x1b[H');  // clear screen
+  parts.push('\x1b[2J\x1b[H');
   parts.push(`\r\n  \x1b[1m${title}\x1b[0m\r\n`);
-  parts.push(`  ${color('─'.repeat(40), 90)}\r\n`);
+  parts.push(`  ${`\x1b[38;5;245m${'─'.repeat(40)}\x1b[0m`}\r\n`);
 
   let idx = 0;
   for (const section of sections) {
@@ -39,24 +40,25 @@ export function renderMenu(options: MenuOptions): string {
 
     for (const item of section.items) {
       if (item.disabled) {
-        parts.push(`    ${color(item.label, 90)}\r\n`);
+        parts.push(`      ${`\x1b[38;5;245m${item.label}\x1b[0m`}\r\n`);
         idx++;
         continue;
       }
 
-      const arrow = idx === cursor ? color('> ', 33) : '  ';
-      const keyHint = item.key ? color(` [${item.key}]`, 90) : '';
-      const line = idx === cursor
-        ? `  ${arrow}\x1b[1m${item.label}\x1b[0m${keyHint}`
-        : `  ${arrow}${item.label}${keyHint}`;
-      parts.push(`${line}\r\n`);
+      const isCurrent = idx === cursor;
+      const arrow = isCurrent ? color('> ', 33) : '  ';
+      const keyTag = item.key ? color(`[${item.key}]`, 33) + ' ' : '';
+      const hint = item.hint ? ' ' + `\x1b[38;5;245m${item.hint}\x1b[0m` : '';
+      const label = isCurrent ? `\x1b[1m${item.label}\x1b[0m` : item.label;
+
+      parts.push(`  ${arrow}${keyTag}${label}${hint}\r\n`);
       idx++;
     }
   }
 
   if (footer) {
-    parts.push(`\r\n  ${color('─'.repeat(40), 90)}\r\n`);
-    parts.push(`  ${color(footer, 90)}\r\n`);
+    parts.push(`\r\n  ${`\x1b[38;5;245m${'─'.repeat(40)}\x1b[0m`}\r\n`);
+    parts.push(`  ${`\x1b[38;5;245m${footer}\x1b[0m`}\r\n`);
   }
 
   return parts.join('');
@@ -66,13 +68,6 @@ export function getTotalItems(sections: MenuSection[]): number {
   return sections.reduce((sum, s) => sum + s.items.length, 0);
 }
 
-export function getSelectableCount(sections: MenuSection[]): number {
-  return sections.reduce((sum, s) => sum + s.items.filter(i => !i.disabled).length, 0);
-}
-
-/**
- * Get the action for the item at the given cursor position
- */
 export function getActionAtCursor(sections: MenuSection[], cursor: number): string | null {
   let idx = 0;
   for (const section of sections) {
@@ -86,9 +81,6 @@ export function getActionAtCursor(sections: MenuSection[], cursor: number): stri
   return null;
 }
 
-/**
- * Find cursor position for a shortcut key
- */
 export function findItemByKey(sections: MenuSection[], key: string): { cursor: number; action: string } | null {
   let idx = 0;
   const lowerKey = key.toLowerCase();
@@ -103,9 +95,6 @@ export function findItemByKey(sections: MenuSection[], key: string): { cursor: n
   return null;
 }
 
-/**
- * Move cursor to next selectable item
- */
 export function nextSelectable(sections: MenuSection[], cursor: number, direction: 1 | -1): number {
   const total = getTotalItems(sections);
   let next = cursor;

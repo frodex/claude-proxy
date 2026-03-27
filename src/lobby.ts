@@ -1,6 +1,7 @@
 // src/lobby.ts
 
-import { moveTo, clearLine, color, hideCursor, showCursor } from './ansi.js';
+import { color } from './ansi.js';
+import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import type { Session } from './types.js';
 
 interface LobbyOptions {
@@ -10,23 +11,14 @@ interface LobbyOptions {
 interface RenderOptions {
   username: string;
   sessions: Session[];
-  selectedIndex: number;
+  cursor: number;
   cols: number;
   rows: number;
 }
 
-interface InputState {
-  selectedIndex: number;
-  sessionCount: number;
-}
-
 type InputResult =
-  | { type: 'navigate'; selectedIndex: number }
-  | { type: 'join'; selectedIndex: number }
-  | { type: 'new' }
-  | { type: 'quit' }
-  | { type: 'refresh' }
-  | { type: 'continue' }
+  | { type: 'select'; action: string; sessionIndex?: number }
+  | { type: 'navigate'; cursor: number }
   | { type: 'none' };
 
 export class Lobby {
@@ -36,99 +28,93 @@ export class Lobby {
     this.motd = options.motd;
   }
 
-  renderScreen(options: RenderOptions): string {
-    const { username, sessions, selectedIndex, cols, rows } = options;
-    const parts: string[] = [];
+  buildSections(sessions: Session[]): MenuSection[] {
+    const sections: MenuSection[] = [];
 
-    // Clear screen
-    parts.push('\x1b[2J');
-    parts.push(hideCursor());
-
-    // Use simple line-by-line rendering with moveTo for each line
-    let row = 2;
-
-    const line = (text: string) => {
-      parts.push(moveTo(row, 3));
-      parts.push(clearLine());
-      parts.push(text);
-      row++;
-    };
-
-    line(color('claude-proxy', 1));
-    line(`Connected as: ${color(username, 36)}`);
-    line('');
-    line(color('─'.repeat(Math.min(cols - 6, 50)), 90));
-    line('');
-
-    if (sessions.length === 0) {
-      line('  No active sessions');
-    } else {
-      line(color('  Active Sessions:', 1));
-      line('');
-
-      for (let i = 0; i < sessions.length; i++) {
-        const s = sessions[i];
-        const arrow = i === selectedIndex ? color('>', 33) : ' ';
+    if (sessions.length > 0) {
+      const sessionItems: MenuItem[] = sessions.map((s, i) => {
         const userCount = s.clients.size;
         const userWord = userCount === 1 ? 'user' : 'users';
         const userNames = Array.from(s.clients.values()).map(c => c.username).join(', ');
-        const lock = s.access?.passwordHash ? color(' [locked]', 33) : '';
-        const vis = s.access?.public === false ? color(' (private)', 90) : '';
-        const vo = s.access?.viewOnly ? color(' [view-only]', 35) : '';
-        const owner = s.access?.owner ? color(` @${s.access.owner}`, 36) : '';
-        const entry = `  ${arrow} ${i + 1}. ${s.name}${lock}${vis}${vo}${owner} (${userCount} ${userWord}) [${userNames}]`;
-        line(i === selectedIndex ? color(entry, 1) : entry);
-      }
+        const lock = s.access?.passwordHash ? ' [locked]' : '';
+        const vis = s.access?.public === false ? ' (private)' : '';
+        const vo = s.access?.viewOnly ? ' [view-only]' : '';
+        const owner = s.access?.owner ? ` @${s.access.owner}` : '';
+        return {
+          label: `${s.name}${lock}${vis}${vo}${owner} (${userCount} ${userWord}) [${userNames}]`,
+          key: `${i + 1}`,
+          action: `join:${i}`,
+        };
+      });
+
+      sections.push({ title: 'Active Sessions', items: sessionItems });
+    } else {
+      sections.push({
+        items: [{ label: 'No active sessions', action: 'none', disabled: true }],
+      });
     }
 
-    line('');
-    line(`  ${color('[n]', 33)} New session`);
-    line(`  ${color('[r]', 33)} Restart previous session`);
-    line(`  ${color('[q]', 33)} Quit`);
-    line(`  ${color('[space]', 90)} Refresh`);
-    line('');
-    line(color('─'.repeat(Math.min(cols - 6, 50)), 90));
+    sections.push({
+      items: [
+        { label: 'New session', key: 'n', action: 'new' },
+        { label: 'Restart previous session', key: 'r', action: 'continue' },
+        { label: 'Quit', key: 'q', action: 'quit' },
+      ],
+    });
 
-    if (this.motd) {
-      line('');
-      line(color(this.motd, 90));
-    }
-
-    return parts.join('');
+    return sections;
   }
 
-  handleInput(data: Buffer, state: InputState): InputResult {
+  renderScreen(options: RenderOptions): string {
+    const { username, sessions, cursor, cols } = options;
+    const sections = this.buildSections(sessions);
+
+    return renderMenu({
+      title: `claude-proxy`,
+      sections,
+      footer: this.motd ? `${this.motd} | Connected as: ${username} | space to refresh` : `Connected as: ${username} | space to refresh`,
+      cursor,
+    });
+  }
+
+  handleInput(data: Buffer, sessions: Session[], cursor: number): InputResult {
     const str = data.toString();
+    const sections = this.buildSections(sessions);
 
-    if (str === '\x1b[B' || str === '\x1bOB') {
-      if (state.sessionCount === 0) return { type: 'none' };
-      const next = (state.selectedIndex + 1) % state.sessionCount;
-      return { type: 'navigate', selectedIndex: next };
-    }
-
+    // Arrow up
     if (str === '\x1b[A' || str === '\x1bOA') {
-      if (state.sessionCount === 0) return { type: 'none' };
-      const next = (state.selectedIndex - 1 + state.sessionCount) % state.sessionCount;
-      return { type: 'navigate', selectedIndex: next };
+      const next = nextSelectable(sections, cursor, -1);
+      return { type: 'navigate', cursor: next };
     }
 
-    if (str === '\r' || str === '\n') {
-      if (state.sessionCount === 0) return { type: 'none' };
-      return { type: 'join', selectedIndex: state.selectedIndex };
+    // Arrow down
+    if (str === '\x1b[B' || str === '\x1bOB') {
+      const next = nextSelectable(sections, cursor, 1);
+      return { type: 'navigate', cursor: next };
     }
 
-    if (/^[1-9]$/.test(str)) {
-      const idx = parseInt(str, 10) - 1;
-      if (idx < state.sessionCount) {
-        return { type: 'join', selectedIndex: idx };
+    // Enter or space — select current
+    if (str === '\r' || str === '\n' || str === ' ') {
+      const action = getActionAtCursor(sections, cursor);
+      if (action) {
+        if (action.startsWith('join:')) {
+          const idx = parseInt(action.split(':')[1]);
+          return { type: 'select', action: 'join', sessionIndex: idx };
+        }
+        return { type: 'select', action };
       }
       return { type: 'none' };
     }
 
-    if (str === 'n' || str === 'N') return { type: 'new' };
-    if (str === 'r' || str === 'R') return { type: 'continue' };
-    if (str === 'q' || str === 'Q') return { type: 'quit' };
-    if (str === ' ') return { type: 'refresh' };
+    // Shortcut keys
+    const found = findItemByKey(sections, str);
+    if (found) {
+      if (found.action.startsWith('join:')) {
+        const idx = parseInt(found.action.split(':')[1]);
+        return { type: 'select', action: 'join', sessionIndex: idx };
+      }
+      return { type: 'select', action: found.action };
+    }
 
     return { type: 'none' };
   }

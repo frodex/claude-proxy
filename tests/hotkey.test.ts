@@ -117,7 +117,7 @@ test('Ctrl+B timeout passes Ctrl+B through', async () => {
   expect(results[0].data!.toString()).toBe('\x02');
 });
 
-test('Ctrl+B then h triggers scrollback', () => {
+test('Ctrl+B then h triggers help', () => {
   const results: Array<{ type: string }> = [];
   const handler = new HotkeyHandler({
     onPassthrough: () => results.push({ type: 'passthrough' }),
@@ -132,5 +132,5 @@ test('Ctrl+B then h triggers scrollback', () => {
   handler.feed(Buffer.from('\x02'));
   handler.feed(Buffer.from('h'));
   expect(results).toHaveLength(1);
-  expect(results[0].type).toBe('scrollback');
+  expect(results[0].type).toBe('help');
 });

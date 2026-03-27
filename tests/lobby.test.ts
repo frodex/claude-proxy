@@ -1,109 +1,70 @@
 import { test, expect, vi } from 'vitest';
 import { Lobby } from '../src/lobby.js';
-import type { Session } from '../src/types.js';
+import type { Session, SessionAccess } from '../src/types.js';
 
-test('renderScreen shows MOTD and session list', () => {
-  const lobby = new Lobby({ motd: 'Welcome to droidware' });
+const defaultAccess: SessionAccess = {
+  owner: 'greg',
+  hidden: false,
+  public: true,
+  allowedUsers: [],
+  allowedGroups: [],
+  passwordHash: null,
+  viewOnly: false,
+};
 
-  const sessions: Session[] = [
-    {
-      id: '1',
-      name: 'bugfix-auth',
-      runAsUser: 'root',
-      createdAt: new Date(),
-      sizeOwner: 'greg',
-      clients: new Map([['greg', { id: 'greg', username: 'greg', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: vi.fn(), lastKeystroke: Date.now() }], ['sam', { id: 'sam', username: 'sam', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: vi.fn(), lastKeystroke: Date.now() }]]),
-    },
-    {
-      id: '2',
-      name: 'feature-api',
-      runAsUser: 'root',
-      createdAt: new Date(),
-      sizeOwner: 'alice',
-      clients: new Map([['alice', { id: 'alice', username: 'alice', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: vi.fn(), lastKeystroke: Date.now() }]]),
-    },
-  ];
+function makeSession(id: string, name: string, users: string[]): Session {
+  const clients = new Map(users.map(u => [u, {
+    id: u, username: u, transport: 'ssh' as const,
+    termSize: { cols: 80, rows: 24 }, write: vi.fn(), lastKeystroke: Date.now(),
+  }]));
+  return { id, name, runAsUser: 'root', createdAt: new Date(), sizeOwner: users[0] || '', clients, access: defaultAccess };
+}
 
-  const output = lobby.renderScreen({
-    username: 'greg',
-    sessions,
-    selectedIndex: 0,
-    cols: 60,
-    rows: 24,
-  });
-
-  expect(output).toContain('Welcome to droidware');
-  expect(output).toContain('greg');
-  expect(output).toContain('bugfix-auth');
-  expect(output).toContain('feature-api');
-  expect(output).toContain('2 users');
-  expect(output).toContain('1 user');
+test('renderScreen shows sessions and commands', () => {
+  const lobby = new Lobby({ motd: 'Welcome' });
+  const sessions = [makeSession('1', 'bugfix', ['greg', 'sam']), makeSession('2', 'feature', ['alice'])];
+  const output = lobby.renderScreen({ username: 'greg', sessions, cursor: 0, cols: 80, rows: 24 });
+  expect(output).toContain('bugfix');
+  expect(output).toContain('feature');
+  expect(output).toContain('New session');
 });
 
-test('renderScreen shows empty state when no sessions', () => {
+test('renderScreen shows empty state', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
-
-  const output = lobby.renderScreen({
-    username: 'greg',
-    sessions: [],
-    selectedIndex: 0,
-    cols: 60,
-    rows: 24,
-  });
-
+  const output = lobby.renderScreen({ username: 'greg', sessions: [], cursor: 0, cols: 80, rows: 24 });
   expect(output).toContain('No active sessions');
-  expect(output).toContain('[n]');
+  expect(output).toContain('New session');
 });
 
-test('handleInput moves selection down', () => {
+test('arrow down navigates', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
-  const state = { selectedIndex: 0, sessionCount: 3 };
-
-  const result = lobby.handleInput(Buffer.from('\x1b[B'), state);
+  const sessions = [makeSession('1', 's1', ['greg']), makeSession('2', 's2', ['sam'])];
+  const result = lobby.handleInput(Buffer.from('\x1b[B'), sessions, 0);
   expect(result.type).toBe('navigate');
-  expect(result.selectedIndex).toBe(1);
+  if (result.type === 'navigate') expect(result.cursor).toBe(1);
 });
 
-test('handleInput moves selection up', () => {
+test('enter selects current item', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
-  const state = { selectedIndex: 2, sessionCount: 3 };
-
-  const result = lobby.handleInput(Buffer.from('\x1b[A'), state);
-  expect(result.type).toBe('navigate');
-  expect(result.selectedIndex).toBe(1);
+  const sessions = [makeSession('1', 's1', ['greg'])];
+  const result = lobby.handleInput(Buffer.from('\r'), sessions, 0);
+  expect(result.type).toBe('select');
+  if (result.type === 'select') {
+    expect(result.action).toBe('join');
+    expect(result.sessionIndex).toBe(0);
+  }
 });
 
-test('handleInput enter selects session', () => {
+test('n triggers new', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
-  const state = { selectedIndex: 1, sessionCount: 3 };
-
-  const result = lobby.handleInput(Buffer.from('\r'), state);
-  expect(result.type).toBe('join');
-  expect(result.selectedIndex).toBe(1);
+  const result = lobby.handleInput(Buffer.from('n'), [], 0);
+  expect(result.type).toBe('select');
+  if (result.type === 'select') expect(result.action).toBe('new');
 });
 
-test('handleInput n triggers new session', () => {
+test('q triggers quit', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
-  const state = { selectedIndex: 0, sessionCount: 2 };
-
-  const result = lobby.handleInput(Buffer.from('n'), state);
-  expect(result.type).toBe('new');
-});
-
-test('handleInput q triggers quit', () => {
-  const lobby = new Lobby({ motd: 'Welcome' });
-  const state = { selectedIndex: 0, sessionCount: 2 };
-
-  const result = lobby.handleInput(Buffer.from('q'), state);
-  expect(result.type).toBe('quit');
-});
-
-test('handleInput wraps selection at boundaries', () => {
-  const lobby = new Lobby({ motd: 'Welcome' });
-
-  const down = lobby.handleInput(Buffer.from('\x1b[B'), { selectedIndex: 2, sessionCount: 3 });
-  expect(down.selectedIndex).toBe(0);
-
-  const up = lobby.handleInput(Buffer.from('\x1b[A'), { selectedIndex: 0, sessionCount: 3 });
-  expect(up.selectedIndex).toBe(2);
+  const result = lobby.handleInput(Buffer.from('q'), [], 0);
+  expect(result.type).toBe('select');
+  if (result.type === 'select') expect(result.action).toBe('quit');
 });

@@ -90,7 +90,7 @@ function showLobby(client: Client): void {
   const output = lobby.renderScreen({
     username: client.username,
     sessions,
-    selectedIndex: state.selectedIndex,
+    cursor: state.selectedIndex,
     cols: client.termSize.cols,
     rows: client.termSize.rows,
   });
@@ -576,43 +576,36 @@ transport.onConnect((client) => {
 
     if (state.mode === 'lobby') {
       const sessions = sessionManager.listSessionsForUser(client.username);
-      const result = lobby.handleInput(data, {
-        selectedIndex: state.selectedIndex,
-        sessionCount: sessions.length,
-      });
+      const result = lobby.handleInput(data, sessions, state.selectedIndex);
 
       switch (result.type) {
         case 'navigate':
-          state.selectedIndex = result.selectedIndex;
+          state.selectedIndex = result.cursor;
           showLobby(client);
           break;
-        case 'join':
-          if (sessions[result.selectedIndex]) {
-            const target = sessions[result.selectedIndex];
-            const check = sessionManager.canUserJoin(client.username, target.id);
-            if (check.needsPassword) {
-              passwordFlow.set(client.id, { sessionId: target.id, buffer: '' });
-              client.write('\x1b[2J\x1b[H');
-              client.write(`Password for "${target.name}": `);
-              break;
+        case 'select':
+          if (result.action === 'join' && result.sessionIndex !== undefined) {
+            const target = sessions[result.sessionIndex];
+            if (target) {
+              const check = sessionManager.canUserJoin(client.username, target.id);
+              if (check.needsPassword) {
+                passwordFlow.set(client.id, { sessionId: target.id, buffer: '' });
+                client.write('\x1b[2J\x1b[H');
+                client.write(`Password for "${target.name}": `);
+                break;
+              }
+              if (check.allowed) {
+                joinSession(client, target.id);
+              }
             }
-            if (check.allowed) {
-              joinSession(client, target.id);
-            }
+          } else if (result.action === 'new') {
+            console.log(`[lobby] ${client.username} starting new session flow`);
+            startNewSessionFlow(client);
+          } else if (result.action === 'continue') {
+            startResumeFlow(client);
+          } else if (result.action === 'quit') {
+            client.write('\r\nGoodbye!\r\n');
           }
-          break;
-        case 'new':
-          console.log(`[lobby] ${client.username} starting new session flow`);
-          startNewSessionFlow(client);
-          break;
-        case 'continue':
-          startResumeFlow(client);
-          break;
-        case 'refresh':
-          showLobby(client);
-          break;
-        case 'quit':
-          client.write('\r\nGoodbye!\r\n');
           break;
       }
     } else if (state.mode === 'session' && state.sessionId) {
