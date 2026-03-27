@@ -5,6 +5,7 @@ const { Server } = ssh2;
 type Connection = ssh2.Connection;
 type SSHSession = ssh2.Session;
 import { readFileSync, existsSync } from 'fs';
+import { execSync } from 'child_process';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
 import type { Transport, Client, Config } from './types.js';
@@ -28,7 +29,7 @@ export class SSHTransport implements Transport {
   private dataCallbacks: Map<string, DataCallback> = new Map();
   private resizeCallbacks: Map<string, ResizeCallback> = new Map();
   private disconnectCallbacks: Map<string, DisconnectCallback> = new Map();
-  private authorizedKeys: Buffer[] = [];
+  private authorizedKeys: Array<{ username: string; keyData: Buffer }> = [];
 
   constructor(options: SSHTransportOptions) {
     this.options = options;
@@ -45,24 +46,70 @@ export class SSHTransport implements Transport {
   }
 
   private loadAuthorizedKeys(): void {
+    // Load global authorized_keys (from config)
     const keyPath = this.options.authorizedKeysPath.replace('~', process.env.HOME ?? '/root');
-    if (!existsSync(keyPath)) {
-      console.warn(`Warning: authorized_keys not found at ${keyPath}`);
-      return;
+    if (existsSync(keyPath)) {
+      this.loadKeysFromFile(keyPath, '__global__');
     }
+  }
 
-    const content = readFileSync(keyPath, 'utf-8');
+  private loadKeysFromFile(path: string, username: string): void {
+    if (!existsSync(path)) return;
+
+    const content = readFileSync(path, 'utf-8');
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith('#')) {
         const parts = trimmed.split(' ');
         if (parts.length >= 2) {
           try {
-            this.authorizedKeys.push(Buffer.from(parts[1], 'base64'));
+            const keyData = Buffer.from(parts[1], 'base64');
+            this.authorizedKeys.push({ username, keyData });
           } catch {}
         }
       }
     }
+  }
+
+  private getUserHome(username: string): string | null {
+    try {
+      const result = execSync(`getent passwd ${username}`, { encoding: 'utf-8' }).trim();
+      const parts = result.split(':');
+      return parts[5] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isKeyAuthorizedForUser(username: string, keyData: Buffer): boolean {
+    // Check global keys first
+    const globalMatch = this.authorizedKeys.some(
+      (ak) => ak.username === '__global__' && ak.keyData.equals(keyData)
+    );
+    if (globalMatch) return true;
+
+    // Check user's own authorized_keys
+    const home = this.getUserHome(username);
+    if (!home) return false;
+
+    const userKeyPath = resolve(home, '.ssh', 'authorized_keys');
+    if (!existsSync(userKeyPath)) return false;
+
+    const content = readFileSync(userKeyPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const parts = trimmed.split(' ');
+        if (parts.length >= 2) {
+          try {
+            const ak = Buffer.from(parts[1], 'base64');
+            if (ak.equals(keyData)) return true;
+          } catch {}
+        }
+      }
+    }
+
+    return false;
   }
 
   private handleConnection(conn: Connection): void {
@@ -72,32 +119,24 @@ export class SSHTransport implements Transport {
       username = ctx.username;
 
       if (ctx.method === 'publickey') {
-        // Compare the raw key data from the SSH handshake against authorized_keys
         const keyData = ctx.key.data;
-        const isAuthorized = this.authorizedKeys.some(
-          (ak) => ak.equals(keyData)
-        );
-        if (isAuthorized) {
+        if (this.isKeyAuthorizedForUser(ctx.username, keyData)) {
+          console.log(`[auth] ${ctx.username}: pubkey accepted`);
           ctx.accept();
           return;
         }
+        console.log(`[auth] ${ctx.username}: pubkey rejected`);
       }
 
-      // Accept password/none auth (the box is already behind SSH/Cloudflare)
-      if (ctx.method === 'none' || ctx.method === 'password') {
-        ctx.accept();
+      if (ctx.method === 'none') {
+        // SSH protocol sends 'none' first to discover available methods
+        ctx.reject(['publickey']);
         return;
       }
 
-      // Accept all if no keys configured
-      if (this.authorizedKeys.length === 0) {
-        ctx.accept();
-        return;
-      }
-
-      // For pubkey that didn't match, still accept for now
-      // TODO: Phase 2 — strict key validation with lobby gates
-      ctx.accept();
+      // Reject everything else — pubkey only
+      console.log(`[auth] ${ctx.username}: method '${ctx.method}' rejected`);
+      ctx.reject(['publickey']);
     });
 
     conn.on('ready', () => {
