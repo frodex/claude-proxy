@@ -5,7 +5,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 import type { SessionAccess } from './types.js';
 
-const STORE_DIR = '/var/run/claude-proxy/sessions';
+const STORE_DIR = '/srv/claude-proxy/data/sessions';
 
 interface StoredSession {
   tmuxId: string;
