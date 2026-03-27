@@ -19,7 +19,7 @@ interface ManagedSession extends Session {
   statusBar: StatusBar;
   hotkeys: Map<string, HotkeyHandler>;
   scrollbackViewers: Map<string, ScrollbackViewer>;
-  dumpMode: Set<string>;  // client IDs in scrollback dump mode
+  dumpMode: Set<string>;
   onClientDetach?: (client: Client) => void;
 }
 
@@ -36,6 +36,51 @@ export class SessionManager {
     this.onSessionEndCallback = callback;
   }
 
+  /**
+   * Discover existing tmux sessions from a previous proxy instance and reattach
+   */
+  discoverSessions(): void {
+    const tmuxSessions = PtyMultiplexer.listTmuxSessions();
+    console.log(`[discover] found ${tmuxSessions.length} existing tmux sessions`);
+
+    for (const ts of tmuxSessions) {
+      const id = ts.tmuxId;  // use tmux session name as our session id
+
+      try {
+        const pty = PtyMultiplexer.reattach({
+          tmuxSessionId: ts.tmuxId,
+          cols: 120,
+          rows: 40,
+          scrollbackBytes: this.options.scrollbackBytes,
+          onExit: (code) => {
+            console.log(`[session-exit] "${ts.name}" (${id}) exited with code ${code}`);
+            this.sessions.delete(id);
+            this.onSessionEndCallback?.(id);
+          },
+        });
+
+        const session: ManagedSession = {
+          id,
+          name: ts.name,
+          runAsUser: this.options.defaultUser,
+          createdAt: ts.created,
+          sizeOwner: '',
+          clients: new Map(),
+          pty,
+          statusBar: new StatusBar(),
+          hotkeys: new Map(),
+          scrollbackViewers: new Map(),
+          dumpMode: new Set(),
+        };
+
+        this.sessions.set(id, session);
+        console.log(`[discover] reattached to "${ts.name}" (created ${ts.created.toISOString()})`);
+      } catch (err: any) {
+        console.error(`[discover] failed to reattach to ${ts.tmuxId}: ${err.message}`);
+      }
+    }
+  }
+
   createSession(
     name: string,
     creator: Client,
@@ -46,7 +91,9 @@ export class SessionManager {
       throw new Error(`Cannot create session: max sessions (${this.options.maxSessions}) reached`);
     }
 
-    const id = randomUUID();
+    // tmux session names: cp-<sanitized-name>
+    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const tmuxId = `cp-${safeName}`;
     const user = runAsUser ?? this.options.defaultUser;
 
     const pty = new PtyMultiplexer({
@@ -55,16 +102,17 @@ export class SessionManager {
       cols: creator.termSize.cols,
       rows: creator.termSize.rows,
       scrollbackBytes: this.options.scrollbackBytes,
+      tmuxSessionId: tmuxId,
       runAsUser: user !== (process.env.USER ?? 'root') ? user : undefined,
       onExit: (code) => {
-        console.log(`[session-exit] "${name}" (${id}) exited with code ${code}`);
-        this.destroySession(id);
-        this.onSessionEndCallback?.(id);
+        console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
+        this.sessions.delete(tmuxId);
+        this.onSessionEndCallback?.(tmuxId);
       },
     });
 
     const session: ManagedSession = {
-      id,
+      id: tmuxId,
       name,
       runAsUser: user,
       createdAt: new Date(),
@@ -77,8 +125,8 @@ export class SessionManager {
       dumpMode: new Set(),
     };
 
-    this.sessions.set(id, session);
-    this.joinSession(id, creator);
+    this.sessions.set(tmuxId, session);
+    this.joinSession(tmuxId, creator);
 
     return session;
   }
@@ -89,12 +137,16 @@ export class SessionManager {
 
     session.clients.set(client.id, client);
 
-    // Clear screen and attach to PTY output (no alternate screen — native scrolling works)
+    // Set size owner if none set (e.g., reattached session)
+    if (!session.sizeOwner) {
+      session.sizeOwner = client.id;
+      session.pty.resize(client.termSize.cols, client.termSize.rows);
+    }
+
     client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
     this.updateTitle(sessionId);
 
-    // Set up hotkey handler for this client
     const hotkey = new HotkeyHandler({
       onPassthrough: (data) => {
         client.lastKeystroke = Date.now();
@@ -123,8 +175,6 @@ export class SessionManager {
       },
     });
     session.hotkeys.set(client.id, hotkey);
-
-    this.refreshStatusBars(sessionId);
   }
 
   leaveSession(sessionId: string, client: Client): void {
@@ -132,7 +182,6 @@ export class SessionManager {
     if (!session) return;
     console.log(`[leave] ${client.username} left "${session.name}" (${session.clients.size - 1} remaining)`);
 
-    // Exit scrollback if active
     session.scrollbackViewers.delete(client.id);
     session.dumpMode.delete(client.id);
 
@@ -141,10 +190,8 @@ export class SessionManager {
     session.hotkeys.get(client.id)?.destroy();
     session.hotkeys.delete(client.id);
 
-    // Clear screen before returning to lobby
     client.write('\x1b[2J\x1b[H');
 
-    // Transfer size ownership if owner left
     if (session.sizeOwner === client.id && session.clients.size > 0) {
       const nextOwner = session.clients.values().next().value!;
       session.sizeOwner = nextOwner.id;
@@ -157,22 +204,15 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // If client is in scrollback dump mode, any key returns to session
     if (session.dumpMode.has(client.id)) {
       this.exitLessScrollback(sessionId, client);
       return;
     }
 
-    // If client is in scrollback mode, route input there
     const viewer = session.scrollbackViewers.get(client.id);
     if (viewer) {
       viewer.handleInput(data);
       return;
-    }
-
-    // Debug: log raw input bytes
-    if (data.length <= 4) {
-      console.log(`[input] ${client.username}: ${Array.from(data).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}`);
     }
 
     const hotkey = session.hotkeys.get(client.id);
@@ -211,7 +251,6 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Detach from PTY while showing help
     session.pty.detach(client);
     session.dumpMode.add(client.id);
 
@@ -240,6 +279,8 @@ export class SessionManager {
       '',
       '  \x1b[1mTitle bar:\x1b[0m  session name | *owner, users | uptime',
       '',
+      '  \x1b[1mSessions persist across proxy restarts (tmux-backed)\x1b[0m',
+      '',
       '  ─────────────────────────────────────',
       '  \x1b[7m Press any key to return \x1b[0m',
       '',
@@ -262,7 +303,6 @@ export class SessionManager {
     const uptime = this.formatUptime(session.createdAt);
     const title = `${session.name} | ${users.join(', ')} | ${uptime}`;
 
-    // Set terminal title via OSC escape for all clients in this session
     const osc = `\x1b]0;claude-proxy: ${title}\x07`;
     for (const client of session.clients.values()) {
       client.write(osc);
@@ -284,7 +324,6 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Detach, clear screen, re-attach (replays scrollback)
     session.pty.detach(client);
     client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
@@ -298,6 +337,9 @@ export class SessionManager {
     return Array.from(this.sessions.values());
   }
 
+  /**
+   * Destroy a session — kills the tmux session
+   */
   destroySession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -309,6 +351,23 @@ export class SessionManager {
     this.sessions.delete(sessionId);
   }
 
+  /**
+   * Graceful shutdown — detach from all tmux sessions without killing them
+   */
+  detachAll(): void {
+    console.log(`[shutdown] detaching from ${this.sessions.size} sessions (tmux sessions will persist)`);
+    for (const session of this.sessions.values()) {
+      for (const hotkey of session.hotkeys.values()) {
+        hotkey.destroy();
+      }
+      session.pty.detachFromTmux();
+    }
+    this.sessions.clear();
+  }
+
+  /**
+   * Hard destroy all — kills tmux sessions too
+   */
   destroyAll(): void {
     for (const id of Array.from(this.sessions.keys())) {
       this.destroySession(id);
@@ -319,7 +378,6 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Detach from live PTY output while viewing scrollback
     session.pty.detach(client);
 
     const viewer = new ScrollbackViewer({
@@ -341,7 +399,6 @@ export class SessionManager {
 
     session.scrollbackViewers.delete(client.id);
 
-    // Re-attach to PTY (replays scrollback so client sees current state)
     client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
   }
@@ -353,24 +410,16 @@ export class SessionManager {
     const content = await session.pty.getReadableScrollback();
     console.log(`[scrolldump] ${content.length} chars, ${content.split('\n').length} lines`);
 
-    // Detach from live PTY
     session.pty.detach(client);
 
-    // Leave alternate screen so PuTTY's native scrollback works
-    client.write(leaveAltScreen());
-
-    // Clear screen and dump content as plain text
     client.write('\x1b[2J\x1b[H');
-    // Write line by line with \r\n for proper rendering
     const lines = content.split('\n');
     for (const line of lines) {
       client.write(line + '\r\n');
     }
 
-    // Separator and prompt
     client.write('\r\n\x1b[7m === SCROLLBACK DUMP === Scroll up with PuTTY scrollbar or Shift+PgUp === Press any key to return === \x1b[0m');
 
-    // Mark client as in "dump" mode — next keypress returns to session
     session.dumpMode.add(client.id);
   }
 
@@ -380,30 +429,12 @@ export class SessionManager {
 
     session.dumpMode.delete(client.id);
 
-    // Re-attach to session
     client.write('\x1b[2J\x1b[H');
     session.pty.attach(client);
-    this.refreshStatusBars(sessionId);
   }
 
   private refreshStatusBars(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-
-    const users = Array.from(session.clients.values()).map(c => ({
-      username: c.username,
-      isSizeOwner: c.id === session.sizeOwner,
-      isTyping: session.statusBar.isTyping(c.username),
-    }));
-
-    for (const client of session.clients.values()) {
-      const statusOutput = session.statusBar.renderStatusOnly({
-        sessionName: session.name,
-        users,
-        clientRows: client.termSize.rows,
-        clientCols: client.termSize.cols,
-      });
-      client.write(statusOutput);
-    }
+    // Status bar rendering disabled (using title bar instead)
+    // Keeping method for future Phase 3 web UI
   }
 }

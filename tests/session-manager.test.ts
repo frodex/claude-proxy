@@ -2,6 +2,11 @@ import { test, expect, vi, afterEach } from 'vitest';
 import { SessionManager } from '../src/session-manager.js';
 import type { Client } from '../src/types.js';
 
+let testCounter = 0;
+function uniqueName(base: string): string {
+  return `${base}-${Date.now()}-${testCounter++}`;
+}
+
 function makeClient(id: string): Client {
   return {
     id,
@@ -26,15 +31,16 @@ test('creates a session and lists it', () => {
     maxSessions: 10,
   });
 
+  const name = uniqueName('test-session');
   const client = makeClient('greg');
-  const session = manager.createSession('test-session', client, undefined, 'cat');
+  const session = manager.createSession(name, client, undefined, 'cat');
 
-  expect(session.name).toBe('test-session');
+  expect(session.name).toBe(name);
   expect(session.id).toBeTruthy();
 
   const list = manager.listSessions();
   expect(list).toHaveLength(1);
-  expect(list[0].name).toBe('test-session');
+  expect(list[0].name).toBe(name);
   expect(list[0].clients.size).toBe(1);
 });
 
@@ -46,7 +52,7 @@ test('join adds client to existing session', () => {
   });
 
   const greg = makeClient('greg');
-  const session = manager.createSession('shared', greg, undefined, 'cat');
+  const session = manager.createSession(uniqueName('shared'), greg, undefined, 'cat');
 
   const sam = makeClient('sam');
   manager.joinSession(session.id, sam);
@@ -64,7 +70,7 @@ test('leave removes client but keeps session alive', () => {
 
   const greg = makeClient('greg');
   const sam = makeClient('sam');
-  const session = manager.createSession('shared', greg, undefined, 'cat');
+  const session = manager.createSession(uniqueName('shared'), greg, undefined, 'cat');
   manager.joinSession(session.id, sam);
 
   manager.leaveSession(session.id, greg);
@@ -82,7 +88,7 @@ test('size owner defaults to session creator', () => {
   });
 
   const greg = makeClient('greg');
-  const session = manager.createSession('test', greg, undefined, 'cat');
+  const session = manager.createSession(uniqueName('test'), greg, undefined, 'cat');
 
   expect(session.sizeOwner).toBe('greg');
 });
@@ -96,7 +102,7 @@ test('claimSizeOwner transfers ownership', () => {
 
   const greg = makeClient('greg');
   const sam = makeClient('sam');
-  const session = manager.createSession('test', greg, undefined, 'cat');
+  const session = manager.createSession(uniqueName('test'), greg, undefined, 'cat');
   manager.joinSession(session.id, sam);
 
   manager.claimSizeOwner(session.id, sam);
@@ -116,8 +122,8 @@ test('respects max sessions limit', () => {
   const c2 = makeClient('c2');
   const c3 = makeClient('c3');
 
-  manager.createSession('s1', c1, undefined, 'cat');
-  manager.createSession('s2', c2, undefined, 'cat');
+  manager.createSession(uniqueName('s1'), c1, undefined, 'cat');
+  manager.createSession(uniqueName('s2'), c2, undefined, 'cat');
 
-  expect(() => manager.createSession('s3', c3, undefined, 'cat')).toThrow('max sessions');
+  expect(() => manager.createSession(uniqueName('s3'), c3, undefined, 'cat')).toThrow('max sessions');
 });

@@ -1,6 +1,7 @@
 // src/pty-multiplexer.ts
 
 import { spawn, type IPty } from 'node-pty';
+import { execSync } from 'child_process';
 import xtermHeadless from '@xterm/headless';
 const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
@@ -11,22 +12,34 @@ interface PtyOptions {
   cols: number;
   rows: number;
   scrollbackBytes: number;
+  tmuxSessionId: string;
   runAsUser?: string;
   onExit?: (code: number) => void;
 }
 
+interface AttachOptions {
+  tmuxSessionId: string;
+  cols: number;
+  rows: number;
+  scrollbackBytes: number;
+  onExit?: (code: number) => void;
+}
+
 export class PtyMultiplexer {
-  private pty: IPty;
+  private pty: IPty | null = null;
   private clients: Map<string, Client> = new Map();
   private scrollback: Buffer[] = [];
   private scrollbackSize = 0;
   private maxScrollback: number;
   private vterm: InstanceType<typeof Terminal>;
+  private tmuxId: string;
+  private onExitCallback?: (code: number) => void;
 
   constructor(options: PtyOptions) {
     this.maxScrollback = options.scrollbackBytes;
+    this.tmuxId = options.tmuxSessionId;
+    this.onExitCallback = options.onExit;
 
-    // Headless xterm for interpreting PTY output into a readable screen buffer
     this.vterm = new Terminal({
       cols: options.cols,
       rows: options.rows,
@@ -34,25 +47,67 @@ export class PtyMultiplexer {
       allowProposedApi: true,
     });
 
-    let command = options.command;
-    let args = options.args;
-
+    // Build the command to run inside tmux
+    let innerCommand: string;
     if (options.runAsUser) {
-      args = ['-', options.runAsUser, '-c', [command, ...args].join(' ')];
-      command = 'su';
+      innerCommand = `su - ${options.runAsUser} -c '${options.command} ${options.args.join(' ')}'`;
+    } else {
+      innerCommand = [options.command, ...options.args].join(' ');
     }
 
-    this.pty = spawn(command, args, {
-      name: 'xterm-256color',
+    // Create a new tmux session (detached) running the command
+    try {
+      execSync(
+        `tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} '${innerCommand}'`,
+        { stdio: 'pipe' }
+      );
+      console.log(`[tmux] created session ${this.tmuxId}`);
+    } catch (err: any) {
+      console.error(`[tmux] failed to create session: ${err.message}`);
+      throw err;
+    }
+
+    // Now attach to it via a PTY
+    this.attachToTmux(options.cols, options.rows);
+  }
+
+  /**
+   * Re-attach to an existing tmux session (e.g., after proxy restart)
+   */
+  static reattach(options: AttachOptions): PtyMultiplexer {
+    const mux = Object.create(PtyMultiplexer.prototype) as PtyMultiplexer;
+    mux.clients = new Map();
+    mux.scrollback = [];
+    mux.scrollbackSize = 0;
+    mux.maxScrollback = options.scrollbackBytes;
+    mux.tmuxId = options.tmuxSessionId;
+    mux.onExitCallback = options.onExit;
+
+    mux.vterm = new Terminal({
       cols: options.cols,
       rows: options.rows,
+      scrollback: 10000,
+      allowProposedApi: true,
+    });
+
+    console.log(`[tmux] reattaching to session ${mux.tmuxId}`);
+    mux.attachToTmux(options.cols, options.rows);
+
+    return mux;
+  }
+
+  private attachToTmux(cols: number, rows: number): void {
+    // Spawn a PTY that attaches to the tmux session
+    this.pty = spawn('tmux', ['attach-session', '-t', this.tmuxId], {
+      name: 'xterm-256color',
+      cols,
+      rows,
       env: process.env as Record<string, string>,
     });
 
     this.pty.onData((data: string) => {
       const buf = Buffer.from(data);
       this.appendScrollback(buf);
-      // Feed into virtual terminal for readable scrollback
       this.vterm.write(data);
       for (const client of this.clients.values()) {
         client.write(buf);
@@ -60,12 +115,28 @@ export class PtyMultiplexer {
     });
 
     this.pty.onExit(({ exitCode }) => {
-      options.onExit?.(exitCode);
+      console.log(`[tmux] attach exited for ${this.tmuxId} with code ${exitCode}`);
+      // Check if the tmux session itself is still alive
+      if (!this.isTmuxSessionAlive()) {
+        console.log(`[tmux] session ${this.tmuxId} is dead`);
+        this.onExitCallback?.(exitCode);
+      } else {
+        // tmux attach exited but session is alive — proxy might be shutting down
+        console.log(`[tmux] session ${this.tmuxId} still alive (proxy detaching)`);
+      }
     });
   }
 
+  private isTmuxSessionAlive(): boolean {
+    try {
+      execSync(`tmux has-session -t ${this.tmuxId}`, { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   attach(client: Client): void {
-    // Replay scrollback to new joiner
     for (const chunk of this.scrollback) {
       client.write(chunk);
     }
@@ -77,34 +148,59 @@ export class PtyMultiplexer {
   }
 
   write(data: Buffer): void {
-    this.pty.write(data.toString());
+    if (this.pty) {
+      this.pty.write(data.toString());
+    }
   }
 
   resize(cols: number, rows: number): void {
-    this.pty.resize(cols, rows);
+    if (this.pty) {
+      this.pty.resize(cols, rows);
+    }
     this.vterm.resize(cols, rows);
   }
 
+  /**
+   * Destroy — kills the tmux session and the PTY
+   */
   destroy(): void {
-    this.pty.kill();
+    if (this.pty) {
+      this.pty.kill();
+      this.pty = null;
+    }
     this.vterm.dispose();
     this.clients.clear();
+    // Kill the tmux session
+    try {
+      execSync(`tmux kill-session -t ${this.tmuxId}`, { stdio: 'pipe' });
+      console.log(`[tmux] killed session ${this.tmuxId}`);
+    } catch {}
+  }
+
+  /**
+   * Detach cleanly — kills the PTY attach process but leaves tmux session alive
+   */
+  detachFromTmux(): void {
+    if (this.pty) {
+      this.pty.kill();
+      this.pty = null;
+    }
+    this.clients.clear();
+    console.log(`[tmux] detached from ${this.tmuxId} (session still alive)`);
   }
 
   getClientCount(): number {
     return this.clients.size;
   }
 
+  getTmuxId(): string {
+    return this.tmuxId;
+  }
+
   getScrollbackText(): string {
     return Buffer.concat(this.scrollback).toString();
   }
 
-  /**
-   * Get the interpreted terminal content as readable text lines.
-   * Uses the headless xterm to produce what a user would actually see,
-   * including scrollback history.
-   * Returns a Promise because xterm.write() is async — we flush pending writes first.
-   */
   getReadableScrollback(): Promise<string> {
     return new Promise((resolve) => {
       this.vterm.write('', () => {
@@ -116,7 +212,6 @@ export class PtyMultiplexer {
           const line = buffer.getLine(i);
           if (line) {
             let text = line.translateToString(true);
-            // Replace box-drawing chars with ASCII equivalents
             text = text
               .replace(/[╭╮┌┐]/g, '+')
               .replace(/[╰╯└┘]/g, '+')
@@ -129,16 +224,41 @@ export class PtyMultiplexer {
           }
         }
 
-        // Trim trailing empty lines
         while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
           lines.pop();
         }
 
-        // Collapse runs of 3+ blank lines into 2
         const result = lines.join('\n').replace(/\n{3,}/g, '\n\n');
         resolve(result);
       });
     });
+  }
+
+  /**
+   * List all tmux sessions with our prefix
+   */
+  static listTmuxSessions(): Array<{ tmuxId: string; name: string; created: Date }> {
+    try {
+      const output = execSync(
+        "tmux list-sessions -F '#{session_name}|#{session_created}' 2>/dev/null",
+        { encoding: 'utf-8' }
+      ).trim();
+
+      if (!output) return [];
+
+      return output.split('\n')
+        .filter(line => line.startsWith('cp-'))
+        .map(line => {
+          const [tmuxId, createdTs] = line.split('|');
+          return {
+            tmuxId,
+            name: tmuxId.replace(/^cp-/, ''),
+            created: new Date(parseInt(createdTs) * 1000),
+          };
+        });
+    } catch {
+      return [];
+    }
   }
 
   private appendScrollback(data: Buffer): void {

@@ -31,6 +31,9 @@ const sessionManager = new SessionManager({
 
 const lobby = new Lobby({ motd: config.lobby.motd });
 
+// Discover existing tmux sessions from previous proxy instance
+sessionManager.discoverSessions();
+
 const clientState: Map<string, {
   mode: 'lobby' | 'session';
   sessionId?: string;
@@ -245,14 +248,15 @@ sessionManager.setOnSessionEnd((sessionId) => {
 });
 
 process.on('SIGINT', async () => {
-  console.log('\nShutting down...');
-  sessionManager.destroyAll();
+  console.log('\nShutting down (sessions will persist in tmux)...');
+  sessionManager.detachAll();
   await transport.stop();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  sessionManager.destroyAll();
+  console.log('SIGTERM received (sessions will persist in tmux)...');
+  sessionManager.detachAll();
   await transport.stop();
   process.exit(0);
 });
