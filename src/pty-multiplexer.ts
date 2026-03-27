@@ -3,6 +3,7 @@
 import { spawn, type IPty } from 'node-pty';
 import { execSync } from 'child_process';
 import { resolve } from 'path';
+import { writeFileSync, unlinkSync } from 'fs';
 import xtermHeadless from '@xterm/headless';
 const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
@@ -70,12 +71,14 @@ export class PtyMultiplexer {
       }
     }
 
-    // Create a new tmux session (detached) running the command
+    // Write inner command to a temp script to avoid quote escaping issues with nested su/tmux
+    const scriptPath = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
+    writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
+
+    const tmuxCmd = `tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
+    console.log(`[tmux] command: ${tmuxCmd}`);
     try {
-      execSync(
-        `tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} '${innerCommand}'`,
-        { stdio: 'pipe' }
-      );
+      execSync(tmuxCmd, { stdio: 'pipe' });
       console.log(`[tmux] created session ${this.tmuxId}`);
     } catch (err: any) {
       console.error(`[tmux] failed to create session: ${err.message}`);
