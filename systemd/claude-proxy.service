@@ -12,5 +12,10 @@ RestartSec=5
 Environment=NODE_ENV=production
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Don't kill child processes (Claude sessions) when stopping the proxy
+KillMode=process
+# Give the proxy time to gracefully notify clients
+TimeoutStopSec=30
+
 [Install]
 WantedBy=multi-user.target
