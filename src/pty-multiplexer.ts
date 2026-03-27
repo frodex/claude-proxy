@@ -49,10 +49,18 @@ export class PtyMultiplexer {
 
     // Build the command to run inside tmux
     let innerCommand: string;
+    // Find the full path to the command
+    let commandPath = options.command;
+    try {
+      commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim();
+    } catch {}
+
     if (options.runAsUser) {
-      innerCommand = `su - ${options.runAsUser} -c '${options.command} ${options.args.join(' ')}'`;
+      // Use su with login shell, provide full path to command
+      const fullCmd = [commandPath, ...options.args].join(' ');
+      innerCommand = `su - ${options.runAsUser} -c '${fullCmd}'`;
     } else {
-      innerCommand = [options.command, ...options.args].join(' ');
+      innerCommand = [commandPath, ...options.args].join(' ');
     }
 
     // Create a new tmux session (detached) running the command

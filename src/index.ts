@@ -95,6 +95,7 @@ function joinSession(client: Client, sessionId: string): void {
 function startNewSessionFlow(client: Client): void {
   creationFlow.set(client.id, { step: 'name', buffer: '' });
   client.write('\x1b[2J\x1b[H');
+  client.write(`New session (as ${client.username})\r\n`);
   client.write('Session name: ');
 }
 
@@ -124,20 +125,15 @@ function handleCreationInput(client: Client, data: Buffer): void {
         client.write('\r\nName cannot be empty. Session name: ');
         return;
       }
-      flow.name = flow.buffer.trim();
-      flow.buffer = '';
-      flow.step = 'user';
-      client.write(`\r\nRun as user [${config.sessions.default_user}]: `);
-      return;
-    }
-
-    if (flow.step === 'user') {
-      const runAsUser = flow.buffer.trim() || config.sessions.default_user;
+      const sessionName = flow.buffer.trim();
       creationFlow.delete(client.id);
 
+      // Session runs as the logged-in user
+      const runAsUser = client.username;
+
       try {
-        console.log(`[create] ${client.username} creating session "${flow.name}" as ${runAsUser}`);
-        const session = sessionManager.createSession(flow.name!, client, runAsUser);
+        console.log(`[create] ${client.username} creating session "${sessionName}" as ${runAsUser}`);
+        const session = sessionManager.createSession(sessionName, client, runAsUser);
         const state = clientState.get(client.id);
         if (state) {
           state.mode = 'session';

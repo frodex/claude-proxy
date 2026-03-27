@@ -103,7 +103,7 @@ export class SessionManager {
       rows: creator.termSize.rows,
       scrollbackBytes: this.options.scrollbackBytes,
       tmuxSessionId: tmuxId,
-      runAsUser: user !== (process.env.USER ?? 'root') ? user : undefined,
+      runAsUser: user,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
         this.sessions.delete(tmuxId);
