@@ -2,6 +2,7 @@
 
 import { spawn, type IPty } from 'node-pty';
 import { execSync } from 'child_process';
+import { resolve } from 'path';
 import xtermHeadless from '@xterm/headless';
 const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
@@ -49,18 +50,25 @@ export class PtyMultiplexer {
 
     // Build the command to run inside tmux
     let innerCommand: string;
-    // Find the full path to the command
-    let commandPath = options.command;
-    try {
-      commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim();
-    } catch {}
+    const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude.sh');
 
     if (options.runAsUser) {
-      // Use su with login shell, provide full path to command
-      const fullCmd = [commandPath, ...options.args].join(' ');
-      innerCommand = `su - ${options.runAsUser} -c '${fullCmd}'`;
+      if (options.command === 'claude') {
+        // Use the launcher script which handles install if needed
+        innerCommand = `su - ${options.runAsUser} -c '${launcherPath}'`;
+      } else {
+        // Non-claude command (e.g., tests using 'cat')
+        let commandPath = options.command;
+        try { commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim(); } catch {}
+        const fullCmd = [commandPath, ...options.args].join(' ');
+        innerCommand = `su - ${options.runAsUser} -c '${fullCmd}'`;
+      }
     } else {
-      innerCommand = [commandPath, ...options.args].join(' ');
+      if (options.command === 'claude') {
+        innerCommand = launcherPath;
+      } else {
+        innerCommand = [options.command, ...options.args].join(' ');
+      }
     }
 
     // Create a new tmux session (detached) running the command
