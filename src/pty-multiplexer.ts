@@ -77,7 +77,6 @@ export class PtyMultiplexer {
 
     const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
     const tmuxCmd = `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
-    console.log(`[tmux] command: ${tmuxCmd}`);
     try {
       execSync(tmuxCmd, { stdio: 'pipe' });
       console.log(`[tmux] created session ${this.tmuxId}`);

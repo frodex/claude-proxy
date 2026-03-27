@@ -719,7 +719,6 @@ transport.onConnect((client) => {
   transport.onData(client, (data) => {
     const state = clientState.get(client.id);
     if (!state) return;
-    console.log(`[data] ${client.username} mode=${state.mode} bytes=${data.length} hex=${Array.from(data.slice(0,4)).map(b=>b.toString(16)).join(' ')}`);
 
     if (creationFlow.has(client.id)) {
       handleCreationInput(client, data);
