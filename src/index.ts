@@ -5,7 +5,9 @@ import { SSHTransport } from './ssh-transport.js';
 import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
 import { setScrollRegion } from './ansi.js';
-import type { Client, Session } from './types.js';
+import { getClaudeUsers, getClaudeGroups, sanitizeGroupName } from './user-utils.js';
+import { createHash } from 'crypto';
+import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -42,10 +44,25 @@ const clientState: Map<string, {
 }> = new Map();
 
 const creationFlow: Map<string, {
-  step: 'name' | 'user';
-  name?: string;
+  step: 'name' | 'hidden' | 'public' | 'users' | 'groups' | 'password';
+  name: string;
+  hidden: boolean;
+  public: boolean;
+  selectedUsers: Set<string>;
+  selectedGroups: Set<string>;
+  availableUsers: string[];
+  availableGroups: Array<{ name: string; systemName: string }>;
+  userCursor: number;
+  groupCursor: number;
   buffer: string;
 }> = new Map();
+
+// Password hashing (simple SHA-256 — not bcrypt to avoid dependency)
+function hashPassword(pw: string): string {
+  return createHash('sha256').update(pw).digest('hex');
+}
+
+const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
 
 const transport = new SSHTransport({
   port: config.port,
@@ -64,7 +81,7 @@ function showLobby(client: Client): void {
   // Reset scroll region to full terminal
   client.write(setScrollRegion(1, client.termSize.rows));
 
-  const sessions = sessionManager.listSessions();
+  const sessions = sessionManager.listSessionsForUser(client.username);
   const output = lobby.renderScreen({
     username: client.username,
     sessions,
@@ -93,10 +110,90 @@ function joinSession(client: Client, sessionId: string): void {
 }
 
 function startNewSessionFlow(client: Client): void {
-  creationFlow.set(client.id, { step: 'name', buffer: '' });
+  creationFlow.set(client.id, {
+    step: 'name',
+    name: '',
+    hidden: false,
+    public: true,
+    selectedUsers: new Set(),
+    selectedGroups: new Set(),
+    availableUsers: getClaudeUsers().filter(u => u !== client.username),
+    availableGroups: getClaudeGroups(),
+    userCursor: 0,
+    groupCursor: 0,
+    buffer: '',
+  });
   client.write('\x1b[2J\x1b[H');
-  client.write(`New session (as ${client.username})\r\n`);
+  client.write(`\x1b[1mNew session\x1b[0m (as ${client.username})\r\n\r\n`);
   client.write('Session name: ');
+}
+
+function renderUserPicker(flow: ReturnType<typeof creationFlow.get>, client: Client): void {
+  if (!flow) return;
+  client.write('\x1b[2J\x1b[H');
+  client.write('\x1b[1mSelect users who can join:\x1b[0m (space=toggle, enter=done)\r\n\r\n');
+  flow.availableUsers.forEach((u, i) => {
+    const selected = flow.selectedUsers.has(u);
+    const cursor = i === flow.userCursor ? '>' : ' ';
+    const check = selected ? '\x1b[32m[x]\x1b[0m' : '[ ]';
+    client.write(`  ${cursor} ${check} ${u}\r\n`);
+  });
+  if (flow.availableUsers.length === 0) {
+    client.write('  (no other Claude users found)\r\n');
+  }
+  client.write('\r\n  Type a username to add: ');
+  if (flow.buffer) client.write(flow.buffer);
+}
+
+function renderGroupPicker(flow: ReturnType<typeof creationFlow.get>, client: Client): void {
+  if (!flow) return;
+  client.write('\x1b[2J\x1b[H');
+  client.write('\x1b[1mSelect groups who can join:\x1b[0m (space=toggle, enter=done)\r\n\r\n');
+  flow.availableGroups.forEach((g, i) => {
+    const selected = flow.selectedGroups.has(g.name);
+    const cursor = i === flow.groupCursor ? '>' : ' ';
+    const check = selected ? '\x1b[32m[x]\x1b[0m' : '[ ]';
+    client.write(`  ${cursor} ${check} ${g.name} (${g.systemName})\r\n`);
+  });
+  if (flow.availableGroups.length === 0) {
+    client.write('  (no cp-* groups found)\r\n');
+  }
+  client.write('\r\n  Type a group name to add: ');
+  if (flow.buffer) client.write(flow.buffer);
+}
+
+function finalizeSession(client: Client): void {
+  const flow = creationFlow.get(client.id);
+  if (!flow) return;
+  creationFlow.delete(client.id);
+
+  const access: Partial<SessionAccess> = {
+    owner: client.username,
+    hidden: flow.hidden,
+    public: flow.public,
+    allowedUsers: Array.from(flow.selectedUsers),
+    allowedGroups: Array.from(flow.selectedGroups),
+    passwordHash: flow.buffer ? hashPassword(flow.buffer) : null,
+  };
+
+  try {
+    console.log(`[create] ${client.username} creating "${flow.name}" (hidden=${flow.hidden} public=${flow.public} users=[${access.allowedUsers}] groups=[${access.allowedGroups}] password=${!!access.passwordHash})`);
+    const session = sessionManager.createSession(flow.name, client, client.username, 'claude', access);
+    const state = clientState.get(client.id);
+    if (state) {
+      state.mode = 'session';
+      state.sessionId = session.id;
+    }
+    sessionManager.setOnClientDetach(session.id, (detachedClient) => {
+      if (detachedClient.id === client.id) {
+        showLobby(client);
+      }
+    });
+    client.write('\x1b[2J\x1b[H');
+  } catch (err: any) {
+    client.write(`\r\nError: ${err.message}\r\n`);
+    showLobby(client);
+  }
 }
 
 function handleCreationInput(client: Client, data: Buffer): void {
@@ -105,58 +202,168 @@ function handleCreationInput(client: Client, data: Buffer): void {
 
   const str = data.toString();
 
-  if (str === '\x7f' || str === '\b') {
-    if (flow.buffer.length > 0) {
-      flow.buffer = flow.buffer.slice(0, -1);
-      client.write('\b \b');
-    }
-    return;
-  }
-
-  if (str === '\x1b') {
+  // Escape cancels at any step
+  if (str === '\x1b' && data.length === 1) {
     creationFlow.delete(client.id);
     showLobby(client);
     return;
   }
 
-  if (str === '\r' || str === '\n') {
-    if (flow.step === 'name') {
-      if (flow.buffer.trim() === '') {
-        client.write('\r\nName cannot be empty. Session name: ');
-        return;
-      }
-      const sessionName = flow.buffer.trim();
-      creationFlow.delete(client.id);
-
-      // Session runs as the logged-in user
-      const runAsUser = client.username;
-
-      try {
-        console.log(`[create] ${client.username} creating session "${sessionName}" as ${runAsUser}`);
-        const session = sessionManager.createSession(sessionName, client, runAsUser);
-        const state = clientState.get(client.id);
-        if (state) {
-          state.mode = 'session';
-          state.sessionId = session.id;
-        }
-
-        sessionManager.setOnClientDetach(session.id, (detachedClient) => {
-          if (detachedClient.id === client.id) {
-            showLobby(client);
-          }
-        });
-
-        client.write('\x1b[2J\x1b[H');
-      } catch (err: any) {
-        client.write(`\r\nError: ${err.message}\r\n`);
-        showLobby(client);
-      }
+  if (flow.step === 'name') {
+    if (str === '\x7f' || str === '\b') {
+      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
       return;
     }
+    if (str === '\r' || str === '\n') {
+      if (flow.buffer.trim() === '') { client.write('\r\nName cannot be empty. Session name: '); return; }
+      flow.name = flow.buffer.trim();
+      flow.buffer = '';
+      flow.step = 'hidden';
+      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      return;
+    }
+    flow.buffer += str;
+    client.write(str);
+    return;
   }
 
-  flow.buffer += str;
-  client.write(str);
+  if (flow.step === 'hidden') {
+    if (str === 'y' || str === 'Y') {
+      flow.hidden = true;
+      flow.public = false;
+      flow.step = 'password';
+      client.write('y\r\n\r\nPassword (enter for none): ');
+      flow.buffer = '';
+      return;
+    }
+    if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
+      flow.hidden = false;
+      flow.step = 'public';
+      client.write('n\r\n\r\nPublic session? (anyone can join) [\x1b[1mY\x1b[0m/n]: ');
+      return;
+    }
+    return;
+  }
+
+  if (flow.step === 'public') {
+    if (str === 'y' || str === 'Y' || str === '\r' || str === '\n') {
+      flow.public = true;
+      flow.step = 'password';
+      client.write('y\r\n\r\nPassword (enter for none): ');
+      flow.buffer = '';
+      return;
+    }
+    if (str === 'n' || str === 'N') {
+      flow.public = false;
+      flow.step = 'users';
+      flow.buffer = '';
+      renderUserPicker(flow, client);
+      return;
+    }
+    return;
+  }
+
+  if (flow.step === 'users') {
+    // Arrow up
+    if (str === '\x1b[A') {
+      flow.userCursor = Math.max(0, flow.userCursor - 1);
+      renderUserPicker(flow, client);
+      return;
+    }
+    // Arrow down
+    if (str === '\x1b[B') {
+      flow.userCursor = Math.min(flow.availableUsers.length - 1, flow.userCursor + 1);
+      renderUserPicker(flow, client);
+      return;
+    }
+    // Space toggles
+    if (str === ' ') {
+      const user = flow.availableUsers[flow.userCursor];
+      if (user) {
+        if (flow.selectedUsers.has(user)) flow.selectedUsers.delete(user);
+        else flow.selectedUsers.add(user);
+      }
+      renderUserPicker(flow, client);
+      return;
+    }
+    // Enter proceeds
+    if (str === '\r' || str === '\n') {
+      // If there's text in buffer, add as manual user
+      if (flow.buffer.trim()) {
+        flow.selectedUsers.add(flow.buffer.trim());
+        flow.buffer = '';
+      }
+      flow.step = 'groups';
+      flow.buffer = '';
+      renderGroupPicker(flow, client);
+      return;
+    }
+    // Backspace
+    if (str === '\x7f' || str === '\b') {
+      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); renderUserPicker(flow, client); }
+      return;
+    }
+    // Typing a username
+    flow.buffer += str;
+    client.write(str);
+    return;
+  }
+
+  if (flow.step === 'groups') {
+    if (str === '\x1b[A') {
+      flow.groupCursor = Math.max(0, flow.groupCursor - 1);
+      renderGroupPicker(flow, client);
+      return;
+    }
+    if (str === '\x1b[B') {
+      flow.groupCursor = Math.min(flow.availableGroups.length - 1, flow.groupCursor + 1);
+      renderGroupPicker(flow, client);
+      return;
+    }
+    if (str === ' ') {
+      const group = flow.availableGroups[flow.groupCursor];
+      if (group) {
+        if (flow.selectedGroups.has(group.name)) flow.selectedGroups.delete(group.name);
+        else flow.selectedGroups.add(group.name);
+      }
+      renderGroupPicker(flow, client);
+      return;
+    }
+    if (str === '\r' || str === '\n') {
+      // If there's text in buffer, add as manual group
+      if (flow.buffer.trim()) {
+        const name = sanitizeGroupName(flow.buffer.trim());
+        if (name) flow.selectedGroups.add(name);
+        flow.buffer = '';
+      }
+      flow.step = 'password';
+      flow.buffer = '';
+      client.write('\x1b[2J\x1b[H');
+      client.write('Password (enter for none): ');
+      return;
+    }
+    if (str === '\x7f' || str === '\b') {
+      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); renderGroupPicker(flow, client); }
+      return;
+    }
+    flow.buffer += str;
+    client.write(str);
+    return;
+  }
+
+  if (flow.step === 'password') {
+    if (str === '\x7f' || str === '\b') {
+      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
+      return;
+    }
+    if (str === '\r' || str === '\n') {
+      finalizeSession(client);
+      return;
+    }
+    flow.buffer += str;
+    client.write('*');  // mask password
+    return;
+  }
 }
 
 transport.onConnect((client) => {
@@ -177,8 +384,31 @@ transport.onConnect((client) => {
       return;
     }
 
+    // Handle password prompt for joining
+    if (passwordFlow.has(client.id)) {
+      const pf = passwordFlow.get(client.id)!;
+      const str = data.toString();
+      if (str === '\x1b' && data.length === 1) { passwordFlow.delete(client.id); showLobby(client); return; }
+      if (str === '\x7f' || str === '\b') { if (pf.buffer.length > 0) { pf.buffer = pf.buffer.slice(0, -1); client.write('\b \b'); } return; }
+      if (str === '\r' || str === '\n') {
+        const session = sessionManager.getSession(pf.sessionId);
+        if (session && session.access.passwordHash === hashPassword(pf.buffer)) {
+          passwordFlow.delete(client.id);
+          joinSession(client, pf.sessionId);
+        } else {
+          client.write('\r\nWrong password.\r\n');
+          passwordFlow.delete(client.id);
+          setTimeout(() => showLobby(client), 1000);
+        }
+        return;
+      }
+      pf.buffer += str;
+      client.write('*');
+      return;
+    }
+
     if (state.mode === 'lobby') {
-      const sessions = sessionManager.listSessions();
+      const sessions = sessionManager.listSessionsForUser(client.username);
       const result = lobby.handleInput(data, {
         selectedIndex: state.selectedIndex,
         sessionCount: sessions.length,
@@ -191,7 +421,17 @@ transport.onConnect((client) => {
           break;
         case 'join':
           if (sessions[result.selectedIndex]) {
-            joinSession(client, sessions[result.selectedIndex].id);
+            const target = sessions[result.selectedIndex];
+            const check = sessionManager.canUserJoin(client.username, target.id);
+            if (check.needsPassword) {
+              passwordFlow.set(client.id, { sessionId: target.id, buffer: '' });
+              client.write('\x1b[2J\x1b[H');
+              client.write(`Password for "${target.name}": `);
+              break;
+            }
+            if (check.allowed) {
+              joinSession(client, target.id);
+            }
           }
           break;
         case 'new':

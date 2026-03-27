@@ -6,7 +6,9 @@ import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
-import type { Client, Session } from './types.js';
+import { saveSessionMeta, loadSessionMeta, deleteSessionMeta } from './session-store.js';
+import { canUserAccessSession } from './user-utils.js';
+import type { Client, Session, SessionAccess } from './types.js';
 
 interface SessionManagerOptions {
   defaultUser: string;
@@ -44,9 +46,20 @@ export class SessionManager {
     console.log(`[discover] found ${tmuxSessions.length} existing tmux sessions`);
 
     for (const ts of tmuxSessions) {
-      const id = ts.tmuxId;  // use tmux session name as our session id
+      const id = ts.tmuxId;
 
       try {
+        // Load persisted metadata (access control, etc.)
+        const meta = loadSessionMeta(ts.tmuxId);
+        const sessionAccess: SessionAccess = meta?.access ?? {
+          owner: 'root',
+          hidden: false,
+          public: true,
+          allowedUsers: [],
+          allowedGroups: [],
+          passwordHash: null,
+        };
+
         const pty = PtyMultiplexer.reattach({
           tmuxSessionId: ts.tmuxId,
           cols: 120,
@@ -54,6 +67,7 @@ export class SessionManager {
           scrollbackBytes: this.options.scrollbackBytes,
           onExit: (code) => {
             console.log(`[session-exit] "${ts.name}" (${id}) exited with code ${code}`);
+            deleteSessionMeta(id);
             this.sessions.delete(id);
             this.onSessionEndCallback?.(id);
           },
@@ -61,11 +75,12 @@ export class SessionManager {
 
         const session: ManagedSession = {
           id,
-          name: ts.name,
-          runAsUser: this.options.defaultUser,
-          createdAt: ts.created,
+          name: meta?.name ?? ts.name,
+          runAsUser: meta?.runAsUser ?? this.options.defaultUser,
+          createdAt: meta ? new Date(meta.createdAt) : ts.created,
           sizeOwner: '',
           clients: new Map(),
+          access: sessionAccess,
           pty,
           statusBar: new StatusBar(),
           hotkeys: new Map(),
@@ -74,7 +89,7 @@ export class SessionManager {
         };
 
         this.sessions.set(id, session);
-        console.log(`[discover] reattached to "${ts.name}" (created ${ts.created.toISOString()})`);
+        console.log(`[discover] reattached to "${session.name}" (owner: ${sessionAccess.owner}, public: ${sessionAccess.public})`);
       } catch (err: any) {
         console.error(`[discover] failed to reattach to ${ts.tmuxId}: ${err.message}`);
       }
@@ -86,6 +101,7 @@ export class SessionManager {
     creator: Client,
     runAsUser?: string,
     command: string = 'claude',
+    access?: Partial<SessionAccess>,
   ): Session {
     if (this.sessions.size >= this.options.maxSessions) {
       throw new Error(`Cannot create session: max sessions (${this.options.maxSessions}) reached`);
@@ -95,6 +111,15 @@ export class SessionManager {
     const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
     const tmuxId = `cp-${safeName}`;
     const user = runAsUser ?? this.options.defaultUser;
+
+    const sessionAccess: SessionAccess = {
+      owner: creator.username,
+      hidden: access?.hidden ?? false,
+      public: access?.public ?? true,
+      allowedUsers: access?.allowedUsers ?? [],
+      allowedGroups: access?.allowedGroups ?? [],
+      passwordHash: access?.passwordHash ?? null,
+    };
 
     const pty = new PtyMultiplexer({
       command,
@@ -106,6 +131,7 @@ export class SessionManager {
       runAsUser: user,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
+        deleteSessionMeta(tmuxId);
         this.sessions.delete(tmuxId);
         this.onSessionEndCallback?.(tmuxId);
       },
@@ -118,12 +144,22 @@ export class SessionManager {
       createdAt: new Date(),
       sizeOwner: creator.id,
       clients: new Map(),
+      access: sessionAccess,
       pty,
       statusBar: new StatusBar(),
       hotkeys: new Map(),
       scrollbackViewers: new Map(),
       dumpMode: new Set(),
     };
+
+    // Persist metadata for restart recovery
+    saveSessionMeta(tmuxId, {
+      tmuxId,
+      name,
+      runAsUser: user,
+      createdAt: session.createdAt.toISOString(),
+      access: sessionAccess,
+    });
 
     this.sessions.set(tmuxId, session);
     this.joinSession(tmuxId, creator);
@@ -303,7 +339,7 @@ export class SessionManager {
     const uptime = this.formatUptime(session.createdAt);
     const title = `${session.name} | ${users.join(', ')} | ${uptime}`;
 
-    const osc = `\x1b]0;claude-proxy: ${title}\x07`;
+    const osc = `\x1b]0;[Ctrl-B ? help] ${title}\x07`;
     for (const client of session.clients.values()) {
       client.write(osc);
     }
@@ -335,6 +371,33 @@ export class SessionManager {
 
   listSessions(): Session[] {
     return Array.from(this.sessions.values());
+  }
+
+  /**
+   * List sessions visible to a specific user (filtered by access control)
+   */
+  listSessionsForUser(username: string): Session[] {
+    return Array.from(this.sessions.values()).filter(session =>
+      canUserAccessSession(username, session.access)
+    );
+  }
+
+  /**
+   * Check if a user can join a specific session
+   */
+  canUserJoin(username: string, sessionId: string): { allowed: boolean; needsPassword: boolean } {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { allowed: false, needsPassword: false };
+
+    if (!canUserAccessSession(username, session.access)) {
+      return { allowed: false, needsPassword: false };
+    }
+
+    if (session.access.passwordHash) {
+      return { allowed: true, needsPassword: true };
+    }
+
+    return { allowed: true, needsPassword: false };
   }
 
   /**

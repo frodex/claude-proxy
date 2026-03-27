@@ -71,7 +71,10 @@ export class Lobby {
         const userCount = s.clients.size;
         const userWord = userCount === 1 ? 'user' : 'users';
         const userNames = Array.from(s.clients.values()).map(c => c.username).join(', ');
-        const entry = `  ${arrow} ${i + 1}. ${s.name} (${userCount} ${userWord}) [${userNames}]`;
+        const lock = s.access?.passwordHash ? color(' [locked]', 33) : '';
+        const vis = s.access?.public === false ? color(' (private)', 90) : '';
+        const owner = s.access?.owner ? color(` @${s.access.owner}`, 36) : '';
+        const entry = `  ${arrow} ${i + 1}. ${s.name}${lock}${vis}${owner} (${userCount} ${userWord}) [${userNames}]`;
         line(i === selectedIndex ? color(entry, 1) : entry);
       }
     }

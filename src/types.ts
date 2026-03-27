@@ -25,6 +25,15 @@ export interface Client {
   lastKeystroke: number;  // Date.now() timestamp
 }
 
+export interface SessionAccess {
+  owner: string;              // username who created the session
+  hidden: boolean;            // only owner sees it in lobby
+  public: boolean;            // anyone can join
+  allowedUsers: string[];     // usernames (when not public)
+  allowedGroups: string[];    // cp- group names without prefix (when not public)
+  passwordHash: string | null; // bcrypt hash, null = no password
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -32,6 +41,7 @@ export interface Session {
   createdAt: Date;
   sizeOwner: string;          // client id
   clients: Map<string, Client>;
+  access: SessionAccess;
 }
 
 export interface Transport {
