@@ -366,8 +366,10 @@ function renderExportPicker(client: Client): void {
     const s = flow.sessions[i];
     const arrow = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
     const checked = flow.selected.has(i) ? '\x1b[32m[x]\x1b[0m' : '[ ]';
-    const label = s.name;
-    client.write(`  ${arrow} ${checked} ${label}\r\n`);
+    const date = s.date ? s.date.toLocaleDateString() + ' ' + s.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const size = s.sizeBytes ? (s.sizeBytes > 1048576 ? `${(s.sizeBytes / 1048576).toFixed(1)}MB` : `${Math.round(s.sizeBytes / 1024)}KB`) : '';
+    const msg = s.firstMessage ? `\x1b[36m${s.firstMessage}\x1b[0m` : `\x1b[38;5;245m(no message)\x1b[0m`;
+    client.write(`  ${arrow} ${checked} ${date} ${size} ${msg}\r\n`);
   }
 
   client.write(`\r\n  \x1b[38;5;245m${flow.selected.size} of ${flow.sessions.length} selected\x1b[0m\r\n`);

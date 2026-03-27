@@ -1,7 +1,7 @@
 // src/export.ts
 
 import { execSync } from 'child_process';
-import { writeFileSync, mkdirSync, existsSync, readdirSync, copyFileSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, readdirSync, copyFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -13,6 +13,9 @@ export interface ExportableSession {
   projectDir?: string;     // e.g., -home-greg
   jsonlPath?: string;      // Full path to the JSONL file
   metadataPath?: string;   // Full path to metadata JSON
+  date?: Date;             // Last modified
+  sizeBytes?: number;      // File size
+  firstMessage?: string;   // First user message
 }
 
 /**
@@ -38,17 +41,55 @@ export function findUserSessions(username: string): ExportableSession[] {
       for (const file of files) {
         const filePath = join(dirPath, file);
         const sessionId = file.replace('.jsonl', '');
-        sessions.push({
-          sessionId,
-          name: `${dir}/${sessionId.substring(0, 8)}`,
-          runAsUser: username,
-          projectDir: dir,
-          jsonlPath: filePath,
-        });
+
+        try {
+          const stat = statSync(filePath);
+
+          // Read first few KB to find the first user message
+          let firstMessage = '';
+          try {
+            const fd = openSync(filePath, 'r');
+            const buf = Buffer.alloc(4096);
+            const bytesRead = readSync(fd, buf, 0, 4096, 0);
+            closeSync(fd);
+            const content = buf.toString('utf-8', 0, bytesRead);
+            for (const line of content.split('\n')) {
+              if (!line.trim()) continue;
+              try {
+                const parsed = JSON.parse(line);
+                // Look for user message content
+                if (parsed.type === 'user' && parsed.message?.content) {
+                  const c = parsed.message.content;
+                  firstMessage = typeof c === 'string' ? c : (Array.isArray(c) ? c.find((x: any) => x.type === 'text')?.text || '' : '');
+                  firstMessage = firstMessage.substring(0, 60);
+                  break;
+                }
+                // Older queue-operation format
+                if (parsed.type === 'queue-operation' && parsed.content) {
+                  firstMessage = parsed.content.substring(0, 60);
+                  break;
+                }
+              } catch {}
+            }
+          } catch {}
+
+          sessions.push({
+            sessionId,
+            name: firstMessage || sessionId.substring(0, 8),
+            runAsUser: username,
+            projectDir: dir,
+            jsonlPath: filePath,
+            date: stat.mtime,
+            sizeBytes: stat.size,
+            firstMessage,
+          });
+        } catch {}
       }
     }
   } catch {}
 
+  // Sort most recent first
+  sessions.sort((a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0));
   return sessions;
 }
 
