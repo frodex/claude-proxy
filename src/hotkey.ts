@@ -10,6 +10,7 @@ interface HotkeyCallbacks {
   onRedraw: () => void;
   onLessScrollback: () => void;
   onHelp: () => void;
+  onEditSession: () => void;
   timeoutMs?: number;
 }
 
@@ -49,6 +50,10 @@ export class HotkeyHandler {
         }
         if (byte === 0x72) {  // 'r'
           this.callbacks.onRedraw();
+          return;
+        }
+        if (byte === 0x65) {  // 'e' — edit session settings
+          this.callbacks.onEditSession();
           return;
         }
         if (byte === 0x62) {  // 'b' — scrollback buffer viewer

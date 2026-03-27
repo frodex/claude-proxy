@@ -23,7 +23,8 @@ interface ManagedSession extends Session {
   hotkeys: Map<string, HotkeyHandler>;
   scrollbackViewers: Map<string, ScrollbackViewer>;
   dumpMode: Set<string>;
-  helpMenu: Map<string, number>;  // client ID -> cursor position
+  helpMenu: Map<string, number>;
+  editMenu: Map<string, { step: string; cursor: number }>;
   onClientDetach?: (client: Client) => void;
 }
 
@@ -90,6 +91,7 @@ export class SessionManager {
           scrollbackViewers: new Map(),
           dumpMode: new Set(),
       helpMenu: new Map(),
+      editMenu: new Map(),
         };
 
         this.sessions.set(id, session);
@@ -157,6 +159,7 @@ export class SessionManager {
       scrollbackViewers: new Map(),
       dumpMode: new Set(),
       helpMenu: new Map(),
+      editMenu: new Map(),
     };
 
     // Persist metadata for restart recovery
@@ -220,6 +223,9 @@ export class SessionManager {
       onHelp: () => {
         this.showHelp(sessionId, client);
       },
+      onEditSession: () => {
+        this.startEditSession(sessionId, client);
+      },
     });
     session.hotkeys.set(client.id, hotkey);
   }
@@ -250,6 +256,80 @@ export class SessionManager {
   handleInput(sessionId: string, client: Client, data: Buffer): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+
+    // Edit session settings menu
+    if (session.editMenu.has(client.id)) {
+      const str = data.toString();
+      const edit = session.editMenu.get(client.id)!;
+      const sections = this.buildEditSections(session.access);
+
+      if (str === '\x1b' && data.length === 1) {
+        session.editMenu.delete(client.id);
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+        return;
+      }
+      if (str === '\x1b[A' || str === '\x1bOA') {
+        edit.cursor = nextSelectable(sections, edit.cursor, -1);
+        this.renderEditMenu(sessionId, client);
+        return;
+      }
+      if (str === '\x1b[B' || str === '\x1bOB') {
+        edit.cursor = nextSelectable(sections, edit.cursor, 1);
+        this.renderEditMenu(sessionId, client);
+        return;
+      }
+      if (str === '\r' || str === '\n' || str === ' ') {
+        const action = getActionAtCursor(sections, edit.cursor);
+        if (action === 'save' || action === 'cancel') {
+          session.editMenu.delete(client.id);
+          if (action === 'save') {
+            // Save updated metadata
+            saveSessionMeta(sessionId, {
+              tmuxId: sessionId,
+              name: session.name,
+              runAsUser: session.runAsUser,
+              createdAt: session.createdAt.toISOString(),
+              access: session.access,
+            });
+            console.log(`[edit] ${client.username} updated settings for "${session.name}"`);
+          }
+          client.write('\x1b[2J\x1b[H');
+          session.pty.attach(client);
+          return;
+        }
+        if (action?.startsWith('toggle:')) {
+          const field = action.split(':')[1];
+          if (field === 'hidden') session.access.hidden = !session.access.hidden;
+          if (field === 'viewOnly') session.access.viewOnly = !session.access.viewOnly;
+          if (field === 'public') session.access.public = !session.access.public;
+          if (field === 'password') {
+            // Toggle password on/off — if set, clear it; if not, we'd need input
+            // For now just clear it
+            if (session.access.passwordHash) {
+              session.access.passwordHash = null;
+            } else {
+              // TODO: prompt for password input
+              session.access.passwordHash = null;
+            }
+          }
+          this.renderEditMenu(sessionId, client);
+          return;
+        }
+      }
+      // Shortcut keys
+      const found = findItemByKey(sections, str);
+      if (found && found.action.startsWith('toggle:')) {
+        const field = found.action.split(':')[1];
+        if (field === 'hidden') session.access.hidden = !session.access.hidden;
+        if (field === 'viewOnly') session.access.viewOnly = !session.access.viewOnly;
+        if (field === 'public') session.access.public = !session.access.public;
+        if (field === 'password' && session.access.passwordHash) session.access.passwordHash = null;
+        this.renderEditMenu(sessionId, client);
+        return;
+      }
+      return;
+    }
 
     // Help menu active
     if (session.helpMenu.has(client.id)) {
@@ -339,6 +419,7 @@ export class SessionManager {
         { label: 'Redraw screen', key: 'r', hint: 'Ctrl-B r', action: 'redraw' },
         { label: 'Scrollback dump', key: 'l', hint: 'Ctrl-B l — use terminal scrollbar', action: 'scrolldump' },
         { label: 'Scrollback viewer', key: 'b', hint: 'Ctrl-B b — arrows/pgup/pgdn', action: 'scrollview' },
+        { label: 'Edit session settings', key: 'e', hint: 'Ctrl-B e — owner only', action: 'editSession' },
       ],
     },
     {
@@ -397,7 +478,64 @@ export class SessionManager {
         session.pty.attach(client);
         this.enterScrollback(sessionId, client);
         break;
+      case 'editSession':
+        this.startEditSession(sessionId, client);
+        break;
     }
+  }
+
+  private buildEditSections(access: SessionAccess): MenuSection[] {
+    return [{
+      title: `Session settings (owner: ${access.owner})`,
+      items: [
+        { label: `Hidden: ${access.hidden ? 'YES' : 'no'}`, key: '1', action: 'toggle:hidden' },
+        { label: `View-only: ${access.viewOnly ? 'YES' : 'no'}`, key: '2', action: 'toggle:viewOnly' },
+        { label: `Public: ${access.public ? 'YES' : 'no'}`, key: '3', action: 'toggle:public' },
+        { label: `Password: ${access.passwordHash ? 'SET' : 'none'}`, key: '4', action: 'toggle:password' },
+        { label: `Allowed users: ${access.allowedUsers.length > 0 ? access.allowedUsers.join(', ') : 'none'}`, action: 'none', disabled: true },
+        { label: `Allowed groups: ${access.allowedGroups.length > 0 ? access.allowedGroups.join(', ') : 'none'}`, action: 'none', disabled: true },
+      ],
+    }, {
+      items: [
+        { label: 'Save and return', key: 'enter', action: 'save' },
+        { label: 'Cancel', key: 'esc', action: 'cancel' },
+      ],
+    }];
+  }
+
+  private renderEditMenu(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const edit = session.editMenu.get(client.id);
+    if (!edit) return;
+
+    const sections = this.buildEditSections(session.access);
+    client.write(renderMenu({
+      title: 'Edit session settings',
+      sections,
+      footer: 'arrows to navigate, space/enter to toggle, esc to cancel',
+      cursor: edit.cursor,
+    }));
+  }
+
+  private startEditSession(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Only owner can edit
+    if (client.username !== session.access.owner) {
+      // Not owner — just flash a message and return
+      client.write('\r\n  Only the session owner can edit settings.\r\n');
+      setTimeout(() => {
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+      }, 1500);
+      return;
+    }
+
+    session.pty.detach(client);
+    session.editMenu.set(client.id, { step: 'menu', cursor: 0 });
+    this.renderEditMenu(sessionId, client);
   }
 
   private updateTitle(sessionId: string): void {

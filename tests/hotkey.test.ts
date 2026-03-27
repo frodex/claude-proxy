@@ -11,6 +11,7 @@ test('passes through normal input', () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
   });
 
   handler.feed(Buffer.from('hello'));
@@ -29,6 +30,7 @@ test('Ctrl+B then d triggers detach', () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -49,6 +51,7 @@ test('Ctrl+B then s triggers claimSize', () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -67,6 +70,7 @@ test('Ctrl+B then unknown key passes both through', () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -86,6 +90,7 @@ test('Ctrl+B Ctrl+B passes single Ctrl+B through', () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
   });
 
   handler.feed(Buffer.from('\x02'));  // Ctrl+B
@@ -105,6 +110,7 @@ test('Ctrl+B timeout passes Ctrl+B through', async () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
     timeoutMs: 50,
   });
 
@@ -127,6 +133,7 @@ test('Ctrl+B then h triggers help', () => {
     onRedraw: () => results.push({ type: 'redraw' }),
     onLessScrollback: () => results.push({ type: 'lessScrollback' }),
     onHelp: () => results.push({ type: 'help' }),
+    onEditSession: () => results.push({ type: 'editSession' }),
   });
 
   handler.feed(Buffer.from('\x02'));
