@@ -8,6 +8,7 @@ import { setScrollRegion } from './ansi.js';
 import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
+import { color } from './ansi.js';
 import { createHash } from 'crypto';
 import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
@@ -238,11 +239,13 @@ function renderRestartPicker(client: Client): void {
   if (flow.deadSessions.length > 0) {
     for (let i = 0; i < flow.deadSessions.length; i++) {
       const s = flow.deadSessions[i];
-      const cursor = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
-      const date = new Date(s.createdAt).toLocaleDateString();
-      const vis = s.access?.public ? '' : ' (private)';
-      const vo = s.access?.viewOnly ? ' [view-only]' : '';
-      client.write(`  ${cursor} ${i + 1}. ${s.name}${vis}${vo} — ${date} @${s.access?.owner || s.runAsUser}\r\n`);
+      const arrow = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
+      const date = new Date(s.createdAt);
+      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const owner = s.access?.owner || s.runAsUser;
+      const displayName = s.name.startsWith('resume-') ? `\x1b[38;5;245m${s.name}\x1b[0m` : s.name;
+      const vis = s.access?.viewOnly ? ' [view-only]' : '';
+      client.write(`  ${arrow} ${i + 1}. ${displayName}${vis} \x1b[38;5;245m${dateStr} @${owner}\x1b[0m\r\n`);
     }
     client.write('\r\n');
   } else {
