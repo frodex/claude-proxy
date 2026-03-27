@@ -605,6 +605,8 @@ transport.onConnect((client) => {
             startResumeFlow(client);
           } else if (result.action === 'quit') {
             client.write('\r\nGoodbye!\r\n');
+          } else if (result.action === 'refresh') {
+            showLobby(client);
           }
           break;
       }

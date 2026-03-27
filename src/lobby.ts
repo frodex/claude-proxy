@@ -72,7 +72,7 @@ export class Lobby {
     return renderMenu({
       title: `claude-proxy`,
       sections,
-      footer: this.motd ? `${this.motd} | Connected as: ${username} | space to refresh` : `Connected as: ${username} | space to refresh`,
+      footer: this.motd ? `${this.motd} | Connected as: ${username} | tab to refresh` : `Connected as: ${username} | tab to refresh`,
       cursor,
     });
   }
@@ -114,6 +114,11 @@ export class Lobby {
         return { type: 'select', action: 'join', sessionIndex: idx };
       }
       return { type: 'select', action: found.action };
+    }
+
+    // Tab to refresh
+    if (str === '\t') {
+      return { type: 'select', action: 'refresh' };
     }
 
     return { type: 'none' };
