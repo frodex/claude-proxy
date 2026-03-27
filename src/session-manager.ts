@@ -304,12 +304,12 @@ export class SessionManager {
       '',
       '  \x1b[1mIn session:\x1b[0m  (press Ctrl+B, release, then key)',
       '',
+      '    Ctrl+B  h     This help',
       '    Ctrl+B  d     Detach (back to lobby)',
       '    Ctrl+B  s     Claim size ownership',
       '    Ctrl+B  r     Redraw screen',
       '    Ctrl+B  l     Scrollback dump (use terminal scrollbar)',
-      '    Ctrl+B  h     Scrollback viewer (arrows/pgup/pgdn)',
-      '    Ctrl+B  ?     This help',
+      '    Ctrl+B  b     Scrollback viewer (arrows/pgup/pgdn)',
       '    Ctrl+B  Ctrl+B   Send literal Ctrl+B',
       '',
       '  \x1b[1mIn lobby:\x1b[0m',
@@ -346,7 +346,7 @@ export class SessionManager {
     const uptime = this.formatUptime(session.createdAt);
     const title = `${session.name} | ${users.join(', ')} | ${uptime}`;
 
-    const osc = `\x1b]0;[Ctrl-B ? help] ${title}\x07`;
+    const osc = `\x1b]0;[Ctrl-B h help] ${title}\x07`;
     for (const client of session.clients.values()) {
       client.write(osc);
     }
