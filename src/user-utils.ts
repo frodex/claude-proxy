@@ -60,6 +60,17 @@ export function isUserInGroup(username: string, groupDisplayName: string): boole
 }
 
 /**
+ * Check if a user can edit a session's settings
+ * Owner, session admins, and cp-admins group members can edit
+ */
+export function canUserEditSession(username: string, access: { owner: string; admins?: string[] }): boolean {
+  if (username === access.owner) return true;
+  if (access.admins?.includes(username)) return true;
+  if (isUserInGroup(username, 'admins')) return true;  // cp-admins group
+  return false;
+}
+
+/**
  * Check if a user can access a session based on its access rules
  */
 export function canUserAccessSession(username: string, access: { owner: string; hidden: boolean; public: boolean; allowedUsers: string[]; allowedGroups: string[] }): boolean {

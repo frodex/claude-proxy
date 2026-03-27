@@ -8,7 +8,7 @@ import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta } from './session-store.js';
-import { canUserAccessSession } from './user-utils.js';
+import { canUserAccessSession, canUserEditSession } from './user-utils.js';
 import type { Client, Session, SessionAccess } from './types.js';
 
 interface SessionManagerOptions {
@@ -62,6 +62,7 @@ export class SessionManager {
           allowedGroups: [],
           passwordHash: null,
           viewOnly: false,
+          admins: [],
         };
 
         const pty = PtyMultiplexer.reattach({
@@ -127,6 +128,7 @@ export class SessionManager {
       allowedGroups: access?.allowedGroups ?? [],
       passwordHash: access?.passwordHash ?? null,
       viewOnly: access?.viewOnly ?? false,
+      admins: access?.admins ?? [],
     };
 
     const pty = new PtyMultiplexer({
@@ -196,7 +198,7 @@ export class SessionManager {
     const hotkey = new HotkeyHandler({
       onPassthrough: (data) => {
         // View-only: block input from non-owners
-        if (session.access.viewOnly && client.username !== session.access.owner) {
+        if (session.access.viewOnly && !canUserEditSession(client.username, session.access)) {
           return;
         }
         client.lastKeystroke = Date.now();
@@ -343,6 +345,37 @@ export class SessionManager {
         return;
       }
 
+      // Sub-state: edit admins
+      if (edit.step === 'admins') {
+        if (!session.access.admins) session.access.admins = [];
+        if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
+        if (str === '\x7f' || str === '\b') {
+          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
+          else if (session.access.admins.length > 0) {
+            session.access.admins.pop();
+            this.renderAdminEditor(client, session.access.admins, '');
+          }
+          return;
+        }
+        if (str === '\r' || str === '\n') {
+          if (edit.buffer && edit.buffer.trim()) {
+            const admin = edit.buffer.trim();
+            if (!session.access.admins.includes(admin)) session.access.admins.push(admin);
+            edit.buffer = '';
+          } else {
+            edit.step = 'menu';
+            this.renderEditMenu(sessionId, client);
+            return;
+          }
+          this.renderAdminEditor(client, session.access.admins, '');
+          return;
+        }
+        if (!edit.buffer) edit.buffer = '';
+        edit.buffer += str;
+        client.write(str);
+        return;
+      }
+
       // Main menu state
       const sections = this.buildEditSections(session.access);
 
@@ -405,6 +438,11 @@ export class SessionManager {
         if (action === 'editGroups') {
           edit.step = 'groups'; edit.buffer = '';
           this.renderGroupEditor(client, session.access.allowedGroups, '');
+          return true;
+        }
+        if (action === 'editAdmins') {
+          edit.step = 'admins'; edit.buffer = '';
+          this.renderAdminEditor(client, session.access.admins ?? [], '');
           return true;
         }
         return false;
@@ -597,6 +635,10 @@ export class SessionManager {
       items.push({ label: 'Allowed groups: hidden (owner only)', action: 'none', disabled: true });
     }
 
+    // Session admins — always editable
+    const adminList = (access.admins?.length ?? 0) > 0 ? access.admins!.join(', ') : 'none';
+    items.push({ label: `Session admins: ${adminList}`, key: '7', action: 'editAdmins' });
+
     return [{
       title: `Session settings (owner: ${access.owner})`,
       items,
@@ -649,14 +691,27 @@ export class SessionManager {
     if (buffer) client.write(buffer);
   }
 
+  private renderAdminEditor(client: Client, admins: string[], buffer: string): void {
+    client.write('\x1b[2J\x1b[H');
+    client.write('  \x1b[1mSession admins:\x1b[0m (can edit settings)\r\n\r\n');
+    if (admins.length > 0) {
+      admins.forEach(a => client.write(`    \x1b[36m${a}\x1b[0m\r\n`));
+    } else {
+      client.write(`    \x1b[38;5;245m(none — owner only)\x1b[0m\r\n`);
+    }
+    client.write('\r\n  \x1b[38;5;245mNote: users in cp-admins group are always admins\x1b[0m\r\n');
+    client.write('\r\n  Type username + enter to add, backspace to remove last\r\n');
+    client.write('  Empty enter to finish\r\n\r\n  > ');
+    if (buffer) client.write(buffer);
+  }
+
   private startEditSession(sessionId: string, client: Client): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Only owner can edit
-    if (client.username !== session.access.owner) {
-      // Not owner — just flash a message and return
-      client.write('\r\n  Only the session owner can edit settings.\r\n');
+    // Only owner, session admins, or cp-admins can edit
+    if (!canUserEditSession(client.username, session.access)) {
+      client.write('\r\n  Only the session owner or admins can edit settings.\r\n');
       setTimeout(() => {
         client.write('\x1b[2J\x1b[H');
         session.pty.attach(client);

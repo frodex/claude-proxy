@@ -33,6 +33,7 @@ export interface SessionAccess {
   allowedGroups: string[];    // cp- group names without prefix (when not public)
   passwordHash: string | null; // hash, null = no password
   viewOnly: boolean;           // only owner can type, others watch
+  admins: string[];            // per-session admins who can edit settings
 }
 
 export interface Session {
