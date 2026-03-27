@@ -1,11 +1,11 @@
 // src/session-manager.ts
 
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
-import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection } from './interactive-menu.js';
+import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta } from './session-store.js';
 import { canUserAccessSession } from './user-utils.js';
@@ -24,7 +24,7 @@ interface ManagedSession extends Session {
   scrollbackViewers: Map<string, ScrollbackViewer>;
   dumpMode: Set<string>;
   helpMenu: Map<string, number>;
-  editMenu: Map<string, { step: string; cursor: number }>;
+  editMenu: Map<string, { step: string; cursor: number; buffer?: string }>;
   onClientDetach?: (client: Client) => void;
 }
 
@@ -261,6 +261,89 @@ export class SessionManager {
     if (session.editMenu.has(client.id)) {
       const str = data.toString();
       const edit = session.editMenu.get(client.id)!;
+
+      // Sub-state: password input
+      if (edit.step === 'password') {
+        if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
+        if (str === '\x7f' || str === '\b') {
+          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
+          return;
+        }
+        if (str === '\r' || str === '\n') {
+          if (edit.buffer && edit.buffer.length > 0) {
+            session.access.passwordHash = createHash('sha256').update(edit.buffer).digest('hex');
+          }
+          edit.step = 'menu'; edit.buffer = '';
+          this.renderEditMenu(sessionId, client);
+          return;
+        }
+        if (!edit.buffer) edit.buffer = '';
+        edit.buffer += str;
+        client.write('*');
+        return;
+      }
+
+      // Sub-state: edit users (type username, enter to add, backspace on empty to remove last)
+      if (edit.step === 'users') {
+        if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
+        if (str === '\x7f' || str === '\b') {
+          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
+          else if (session.access.allowedUsers.length > 0) {
+            const removed = session.access.allowedUsers.pop();
+            this.renderUserEditor(client, session.access.allowedUsers, '');
+          }
+          return;
+        }
+        if (str === '\r' || str === '\n') {
+          if (edit.buffer && edit.buffer.trim()) {
+            const user = edit.buffer.trim();
+            if (!session.access.allowedUsers.includes(user)) session.access.allowedUsers.push(user);
+            edit.buffer = '';
+          } else {
+            edit.step = 'menu';
+            this.renderEditMenu(sessionId, client);
+            return;
+          }
+          this.renderUserEditor(client, session.access.allowedUsers, '');
+          return;
+        }
+        if (!edit.buffer) edit.buffer = '';
+        edit.buffer += str;
+        client.write(str);
+        return;
+      }
+
+      // Sub-state: edit groups
+      if (edit.step === 'groups') {
+        if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
+        if (str === '\x7f' || str === '\b') {
+          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
+          else if (session.access.allowedGroups.length > 0) {
+            session.access.allowedGroups.pop();
+            this.renderGroupEditor(client, session.access.allowedGroups, '');
+          }
+          return;
+        }
+        if (str === '\r' || str === '\n') {
+          if (edit.buffer && edit.buffer.trim()) {
+            const group = edit.buffer.trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+            if (group && !session.access.allowedGroups.includes(group)) session.access.allowedGroups.push(group);
+            edit.buffer = '';
+          } else {
+            edit.step = 'menu';
+            this.renderEditMenu(sessionId, client);
+            return;
+          }
+          this.renderGroupEditor(client, session.access.allowedGroups, '');
+          return;
+        }
+        if (!edit.buffer) edit.buffer = '';
+        edit.buffer += str;
+        client.write(str);
+        return;
+      }
+
+      // Main menu state
       const sections = this.buildEditSections(session.access);
 
       if (str === '\x1b' && data.length === 1) {
@@ -279,55 +362,60 @@ export class SessionManager {
         this.renderEditMenu(sessionId, client);
         return;
       }
-      if (str === '\r' || str === '\n' || str === ' ') {
-        const action = getActionAtCursor(sections, edit.cursor);
+
+      const doAction = (action: string | null) => {
+        if (!action) return false;
         if (action === 'save' || action === 'cancel') {
           session.editMenu.delete(client.id);
           if (action === 'save') {
-            // Save updated metadata
             saveSessionMeta(sessionId, {
-              tmuxId: sessionId,
-              name: session.name,
-              runAsUser: session.runAsUser,
-              createdAt: session.createdAt.toISOString(),
-              access: session.access,
+              tmuxId: sessionId, name: session.name, runAsUser: session.runAsUser,
+              createdAt: session.createdAt.toISOString(), access: session.access,
             });
             console.log(`[edit] ${client.username} updated settings for "${session.name}"`);
           }
           client.write('\x1b[2J\x1b[H');
           session.pty.attach(client);
-          return;
+          return true;
         }
-        if (action?.startsWith('toggle:')) {
-          const field = action.split(':')[1];
-          if (field === 'hidden') session.access.hidden = !session.access.hidden;
-          if (field === 'viewOnly') session.access.viewOnly = !session.access.viewOnly;
-          if (field === 'public') session.access.public = !session.access.public;
-          if (field === 'password') {
-            // Toggle password on/off — if set, clear it; if not, we'd need input
-            // For now just clear it
-            if (session.access.passwordHash) {
-              session.access.passwordHash = null;
-            } else {
-              // TODO: prompt for password input
-              session.access.passwordHash = null;
-            }
+        if (action === 'toggle:hidden') { session.access.hidden = !session.access.hidden; this.renderEditMenu(sessionId, client); return true; }
+        if (action === 'toggle:viewOnly') { session.access.viewOnly = !session.access.viewOnly; this.renderEditMenu(sessionId, client); return true; }
+        if (action === 'toggle:password') {
+          if (session.access.passwordHash) {
+            session.access.passwordHash = null;
+            this.renderEditMenu(sessionId, client);
+          } else {
+            edit.step = 'password'; edit.buffer = '';
+            client.write('\x1b[2J\x1b[H');
+            client.write('  Enter new password: ');
           }
-          this.renderEditMenu(sessionId, client);
-          return;
+          return true;
         }
+        if (action === 'setPassword') {
+          edit.step = 'password'; edit.buffer = '';
+          client.write('\x1b[2J\x1b[H');
+          client.write('  Enter new password: ');
+          return true;
+        }
+        if (action === 'editUsers') {
+          edit.step = 'users'; edit.buffer = '';
+          this.renderUserEditor(client, session.access.allowedUsers, '');
+          return true;
+        }
+        if (action === 'editGroups') {
+          edit.step = 'groups'; edit.buffer = '';
+          this.renderGroupEditor(client, session.access.allowedGroups, '');
+          return true;
+        }
+        return false;
+      };
+
+      if (str === '\r' || str === '\n' || str === ' ') {
+        if (doAction(getActionAtCursor(sections, edit.cursor))) return;
       }
-      // Shortcut keys
+
       const found = findItemByKey(sections, str);
-      if (found && found.action.startsWith('toggle:')) {
-        const field = found.action.split(':')[1];
-        if (field === 'hidden') session.access.hidden = !session.access.hidden;
-        if (field === 'viewOnly') session.access.viewOnly = !session.access.viewOnly;
-        if (field === 'public') session.access.public = !session.access.public;
-        if (field === 'password' && session.access.passwordHash) session.access.passwordHash = null;
-        this.renderEditMenu(sessionId, client);
-        return;
-      }
+      if (found) { if (doAction(found.action)) return; }
       return;
     }
 
@@ -485,19 +573,36 @@ export class SessionManager {
   }
 
   private buildEditSections(access: SessionAccess): MenuSection[] {
+    const items: MenuItem[] = [
+      { label: `Hidden: ${access.hidden ? 'YES' : 'no'}`, key: '1', action: 'toggle:hidden' },
+      { label: `View-only: ${access.viewOnly ? 'YES' : 'no'}`, key: '2', action: 'toggle:viewOnly' },
+      { label: `Require password: ${access.passwordHash ? 'YES' : 'no'}`, key: '3', action: 'toggle:password' },
+    ];
+
+    // Password value — only editable when password is on
+    if (access.passwordHash) {
+      items.push({ label: 'Change password...', key: '4', action: 'setPassword' });
+    } else {
+      items.push({ label: 'Password: off', action: 'none', disabled: true });
+    }
+
+    // Allowed users — editable when not hidden
+    if (!access.hidden) {
+      const userList = access.allowedUsers.length > 0 ? access.allowedUsers.join(', ') : 'everyone';
+      items.push({ label: `Allowed users: ${userList}`, key: '5', action: 'editUsers' });
+      const groupList = access.allowedGroups.length > 0 ? access.allowedGroups.join(', ') : 'all';
+      items.push({ label: `Allowed groups: ${groupList}`, key: '6', action: 'editGroups' });
+    } else {
+      items.push({ label: 'Allowed users: hidden (owner only)', action: 'none', disabled: true });
+      items.push({ label: 'Allowed groups: hidden (owner only)', action: 'none', disabled: true });
+    }
+
     return [{
       title: `Session settings (owner: ${access.owner})`,
-      items: [
-        { label: `Hidden: ${access.hidden ? 'YES' : 'no'}`, key: '1', action: 'toggle:hidden' },
-        { label: `View-only: ${access.viewOnly ? 'YES' : 'no'}`, key: '2', action: 'toggle:viewOnly' },
-        { label: `Public: ${access.public ? 'YES' : 'no'}`, key: '3', action: 'toggle:public' },
-        { label: `Password: ${access.passwordHash ? 'SET' : 'none'}`, key: '4', action: 'toggle:password' },
-        { label: `Allowed users: ${access.allowedUsers.length > 0 ? access.allowedUsers.join(', ') : 'none'}`, action: 'none', disabled: true },
-        { label: `Allowed groups: ${access.allowedGroups.length > 0 ? access.allowedGroups.join(', ') : 'none'}`, action: 'none', disabled: true },
-      ],
+      items,
     }, {
       items: [
-        { label: 'Save and return', key: 'enter', action: 'save' },
+        { label: 'Save and return', action: 'save' },
         { label: 'Cancel', key: 'esc', action: 'cancel' },
       ],
     }];
@@ -516,6 +621,32 @@ export class SessionManager {
       footer: 'arrows to navigate, space/enter to toggle, esc to cancel',
       cursor: edit.cursor,
     }));
+  }
+
+  private renderUserEditor(client: Client, users: string[], buffer: string): void {
+    client.write('\x1b[2J\x1b[H');
+    client.write('  \x1b[1mAllowed users:\x1b[0m\r\n\r\n');
+    if (users.length > 0) {
+      users.forEach(u => client.write(`    \x1b[36m${u}\x1b[0m\r\n`));
+    } else {
+      client.write(`    \x1b[38;5;245m(none — everyone can join)\x1b[0m\r\n`);
+    }
+    client.write('\r\n  Type username + enter to add, backspace to remove last\r\n');
+    client.write('  Empty enter to finish\r\n\r\n  > ');
+    if (buffer) client.write(buffer);
+  }
+
+  private renderGroupEditor(client: Client, groups: string[], buffer: string): void {
+    client.write('\x1b[2J\x1b[H');
+    client.write('  \x1b[1mAllowed groups:\x1b[0m (cp- prefix added automatically)\r\n\r\n');
+    if (groups.length > 0) {
+      groups.forEach(g => client.write(`    \x1b[36m${g}\x1b[0m (cp-${g})\r\n`));
+    } else {
+      client.write(`    \x1b[38;5;245m(none — all groups)\x1b[0m\r\n`);
+    }
+    client.write('\r\n  Type group name + enter to add, backspace to remove last\r\n');
+    client.write('  Empty enter to finish\r\n\r\n  > ');
+    if (buffer) client.write(buffer);
   }
 
   private startEditSession(sessionId: string, client: Client): void {
