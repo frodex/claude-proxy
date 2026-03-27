@@ -100,13 +100,13 @@ export class Lobby {
   handleInput(data: Buffer, state: InputState): InputResult {
     const str = data.toString();
 
-    if (str === '\x1b[B') {
+    if (str === '\x1b[B' || str === '\x1bOB') {
       if (state.sessionCount === 0) return { type: 'none' };
       const next = (state.selectedIndex + 1) % state.sessionCount;
       return { type: 'navigate', selectedIndex: next };
     }
 
-    if (str === '\x1b[A') {
+    if (str === '\x1b[A' || str === '\x1bOA') {
       if (state.sessionCount === 0) return { type: 'none' };
       const next = (state.selectedIndex - 1 + state.sessionCount) % state.sessionCount;
       return { type: 'navigate', selectedIndex: next };

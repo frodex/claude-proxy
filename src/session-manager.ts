@@ -260,13 +260,13 @@ export class SessionManager {
         this.handleHelpAction(sessionId, client, 'back');
         return;
       }
-      if (str === '\x1b[A') {
+      if (str === '\x1b[A' || str === '\x1bOA') {
         cursor = nextSelectable(this.helpSections, cursor, -1);
         session.helpMenu.set(client.id, cursor);
         client.write(renderMenu({ title: 'claude-proxy help', sections: this.helpSections, footer: 'arrows to navigate, enter/space to select, esc to return', cursor }));
         return;
       }
-      if (str === '\x1b[B') {
+      if (str === '\x1b[B' || str === '\x1bOB') {
         cursor = nextSelectable(this.helpSections, cursor, 1);
         session.helpMenu.set(client.id, cursor);
         client.write(renderMenu({ title: 'claude-proxy help', sections: this.helpSections, footer: 'arrows to navigate, enter/space to select, esc to return', cursor }));
