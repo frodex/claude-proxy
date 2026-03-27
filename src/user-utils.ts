@@ -1,7 +1,7 @@
 // src/user-utils.ts
 
 import { execSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, statSync, openSync, readSync, closeSync } from 'fs';
 
 /**
  * Get users who have a ~/.claude/ directory (have used Claude)
@@ -88,4 +88,76 @@ export function canUserAccessSession(username: string, access: { owner: string; 
  */
 export function sanitizeGroupName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+}
+
+export interface ClaudeSession {
+  sessionId: string;
+  projectDir: string;
+  timestamp: Date;
+  firstMessage: string;
+}
+
+/**
+ * List a user's past Claude Code sessions from ~/.claude/projects/
+ * Returns most recent first
+ */
+export function getUserClaudeSessions(username: string): ClaudeSession[] {
+  const home = getUserHome(username);
+  if (!home) return [];
+
+  const projectsDir = `${home}/.claude/projects`;
+  if (!existsSync(projectsDir)) return [];
+
+  const sessions: ClaudeSession[] = [];
+
+  try {
+    const dirs = readdirSync(projectsDir);
+    for (const dir of dirs) {
+      const dirPath = `${projectsDir}/${dir}`;
+      let files: string[];
+      try { files = readdirSync(dirPath).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+
+      for (const file of files) {
+        const filePath = `${dirPath}/${file}`;
+        const sessionId = file.replace('.jsonl', '');
+        try {
+          const stat = statSync(filePath);
+          // Read first line for the initial message
+          const fd = openSync(filePath, 'r');
+          const buf = Buffer.alloc(1024);
+          readSync(fd, buf, 0, 1024, 0);
+          closeSync(fd);
+          const firstLine = buf.toString('utf-8').split('\n')[0];
+          let firstMessage = '';
+          let timestamp = stat.mtime;
+          try {
+            const parsed = JSON.parse(firstLine);
+            firstMessage = (parsed.content || '').substring(0, 80);
+            if (parsed.timestamp) timestamp = new Date(parsed.timestamp);
+          } catch {}
+
+          sessions.push({
+            sessionId,
+            projectDir: dir,
+            timestamp,
+            firstMessage,
+          });
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // Sort most recent first
+  sessions.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  return sessions;
+}
+
+function getUserHome(username: string): string | null {
+  try {
+    const result = execSync(`getent passwd ${username}`, { encoding: 'utf-8' }).trim();
+    const parts = result.split(':');
+    return parts[5] ?? null;
+  } catch {
+    return null;
+  }
 }

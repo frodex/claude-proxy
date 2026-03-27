@@ -26,6 +26,7 @@ type InputResult =
   | { type: 'new' }
   | { type: 'quit' }
   | { type: 'refresh' }
+  | { type: 'continue' }
   | { type: 'none' };
 
 export class Lobby {
@@ -81,6 +82,7 @@ export class Lobby {
 
     line('');
     line(`  ${color('[n]', 33)} New session`);
+    line(`  ${color('[c]', 33)} Continue previous session`);
     line(`  ${color('[r]', 33)} Refresh`);
     line(`  ${color('[q]', 33)} Quit`);
     line('');
@@ -123,6 +125,7 @@ export class Lobby {
     }
 
     if (str === 'n' || str === 'N') return { type: 'new' };
+    if (str === 'c' || str === 'C') return { type: 'continue' };
     if (str === 'q' || str === 'Q') return { type: 'quit' };
     if (str === 'r' || str === 'R') return { type: 'refresh' };
 

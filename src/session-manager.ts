@@ -102,6 +102,7 @@ export class SessionManager {
     runAsUser?: string,
     command: string = 'claude',
     access?: Partial<SessionAccess>,
+    commandArgs: string[] = [],
   ): Session {
     if (this.sessions.size >= this.options.maxSessions) {
       throw new Error(`Cannot create session: max sessions (${this.options.maxSessions}) reached`);
@@ -123,7 +124,7 @@ export class SessionManager {
 
     const pty = new PtyMultiplexer({
       command,
-      args: [],
+      args: commandArgs,
       cols: creator.termSize.cols,
       rows: creator.termSize.rows,
       scrollbackBytes: this.options.scrollbackBytes,

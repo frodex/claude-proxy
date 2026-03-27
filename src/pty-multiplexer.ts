@@ -54,10 +54,9 @@ export class PtyMultiplexer {
 
     if (options.runAsUser) {
       if (options.command === 'claude') {
-        // Use the launcher script which handles install if needed
-        innerCommand = `su - ${options.runAsUser} -c '${launcherPath}'`;
+        const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
+        innerCommand = `su - ${options.runAsUser} -c '${launcherPath}${argsStr}'`;
       } else {
-        // Non-claude command (e.g., tests using 'cat')
         let commandPath = options.command;
         try { commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim(); } catch {}
         const fullCmd = [commandPath, ...options.args].join(' ');

@@ -5,7 +5,7 @@ import { SSHTransport } from './ssh-transport.js';
 import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
 import { setScrollRegion } from './ansi.js';
-import { getClaudeUsers, getClaudeGroups, sanitizeGroupName } from './user-utils.js';
+import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, getUserClaudeSessions, type ClaudeSession } from './user-utils.js';
 import { createHash } from 'crypto';
 import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
@@ -63,6 +63,8 @@ function hashPassword(pw: string): string {
 }
 
 const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
+
+const resumeFlow: Map<string, { sessions: ClaudeSession[]; cursor: number }> = new Map();
 
 const transport = new SSHTransport({
   port: config.port,
@@ -193,6 +195,115 @@ function finalizeSession(client: Client): void {
   } catch (err: any) {
     client.write(`\r\nError: ${err.message}\r\n`);
     showLobby(client);
+  }
+}
+
+function startResumeFlow(client: Client): void {
+  const sessions = getUserClaudeSessions(client.username);
+  if (sessions.length === 0) {
+    client.write('\x1b[2J\x1b[H');
+    client.write('  No previous Claude sessions found.\r\n\r\n  Press any key to return...');
+    // Use dumpMode-style one-key return
+    resumeFlow.set(client.id, { sessions: [], cursor: 0 });
+    return;
+  }
+  resumeFlow.set(client.id, { sessions, cursor: 0 });
+  renderResumePicker(client);
+}
+
+function renderResumePicker(client: Client): void {
+  const flow = resumeFlow.get(client.id);
+  if (!flow || flow.sessions.length === 0) return;
+
+  client.write('\x1b[2J\x1b[H');
+  client.write('\x1b[1mContinue previous session:\x1b[0m (arrows to select, enter to resume, esc to cancel)\r\n\r\n');
+
+  const maxShow = 15;
+  const start = Math.max(0, flow.cursor - maxShow + 1);
+  const end = Math.min(flow.sessions.length, start + maxShow);
+
+  for (let i = start; i < end; i++) {
+    const s = flow.sessions[i];
+    const cursor = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
+    const date = s.timestamp.toLocaleDateString();
+    const time = s.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const msg = s.firstMessage || '(empty)';
+    const truncMsg = msg.length > 50 ? msg.substring(0, 50) + '...' : msg;
+    const line = `  ${cursor} ${date} ${time}  \x1b[36m${truncMsg}\x1b[0m`;
+    client.write(line + '\r\n');
+  }
+
+  if (flow.sessions.length > maxShow) {
+    client.write(`\r\n  \x1b[90m(${flow.sessions.length} total, showing ${start + 1}-${end})\x1b[0m\r\n`);
+  }
+}
+
+function handleResumeInput(client: Client, data: Buffer): void {
+  const flow = resumeFlow.get(client.id);
+  if (!flow) return;
+
+  const str = data.toString();
+
+  // No sessions — any key returns
+  if (flow.sessions.length === 0) {
+    resumeFlow.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  // Escape
+  if (str === '\x1b' && data.length === 1) {
+    resumeFlow.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  // Arrow up
+  if (str === '\x1b[A') {
+    flow.cursor = Math.max(0, flow.cursor - 1);
+    renderResumePicker(client);
+    return;
+  }
+
+  // Arrow down
+  if (str === '\x1b[B') {
+    flow.cursor = Math.min(flow.sessions.length - 1, flow.cursor + 1);
+    renderResumePicker(client);
+    return;
+  }
+
+  // Enter — resume selected session
+  if (str === '\r' || str === '\n') {
+    const selected = flow.sessions[flow.cursor];
+    resumeFlow.delete(client.id);
+
+    const sessionName = `resume-${selected.sessionId.substring(0, 8)}`;
+
+    try {
+      console.log(`[resume] ${client.username} resuming session ${selected.sessionId}`);
+      const session = sessionManager.createSession(
+        sessionName,
+        client,
+        client.username,
+        'claude',
+        { owner: client.username, hidden: false, public: true, allowedUsers: [], allowedGroups: [], passwordHash: null },
+        ['--resume', selected.sessionId],
+      );
+
+      const state = clientState.get(client.id);
+      if (state) {
+        state.mode = 'session';
+        state.sessionId = session.id;
+      }
+      sessionManager.setOnClientDetach(session.id, (detachedClient) => {
+        if (detachedClient.id === client.id) showLobby(client);
+      });
+      client.write('\x1b[2J\x1b[H');
+    } catch (err: any) {
+      client.write(`\r\nError: ${err.message}\r\n`);
+      showLobby(client);
+    }
+    return;
   }
 }
 
@@ -407,6 +518,12 @@ transport.onConnect((client) => {
       return;
     }
 
+    // Handle resume session picker
+    if (resumeFlow.has(client.id)) {
+      handleResumeInput(client, data);
+      return;
+    }
+
     if (state.mode === 'lobby') {
       const sessions = sessionManager.listSessionsForUser(client.username);
       const result = lobby.handleInput(data, {
@@ -437,6 +554,9 @@ transport.onConnect((client) => {
         case 'new':
           console.log(`[lobby] ${client.username} starting new session flow`);
           startNewSessionFlow(client);
+          break;
+        case 'continue':
+          startResumeFlow(client);
           break;
         case 'refresh':
           showLobby(client);
