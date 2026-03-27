@@ -5,7 +5,7 @@ import { SSHTransport } from './ssh-transport.js';
 import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
 import { setScrollRegion } from './ansi.js';
-import { getClaudeUsers, getClaudeGroups, sanitizeGroupName } from './user-utils.js';
+import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
 import { createHash } from 'crypto';
@@ -47,11 +47,13 @@ const clientState: Map<string, {
 }> = new Map();
 
 const creationFlow: Map<string, {
-  step: 'name' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password';
+  step: 'name' | 'runas' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password' | 'dangermode';
   isResume?: boolean;
   name: string;
+  runAsUser?: string;
   hidden: boolean;
   viewOnly: boolean;
+  dangerousSkipPermissions: boolean;
   public: boolean;
   selectedUsers: Set<string>;
   selectedGroups: Set<string>;
@@ -118,12 +120,18 @@ function joinSession(client: Client, sessionId: string): void {
   });
 }
 
+function isAdmin(username: string): boolean {
+  return username === 'root' || isUserInGroup(username, 'admins');
+}
+
 function startNewSessionFlow(client: Client): void {
   creationFlow.set(client.id, {
     step: 'name',
     name: '',
+    runAsUser: client.username,
     hidden: false,
     viewOnly: false,
+    dangerousSkipPermissions: false,
     public: true,
     selectedUsers: new Set(),
     selectedGroups: new Set(),
@@ -188,9 +196,12 @@ function finalizeSession(client: Client): void {
   };
 
   try {
-    const commandArgs = flow.isResume ? ['--resume'] : [];
-    console.log(`[create] ${client.username} creating "${flow.name}" (hidden=${flow.hidden} public=${flow.public} resume=${!!flow.isResume})`);
-    const session = sessionManager.createSession(flow.name, client, client.username, 'claude', access, commandArgs);
+    const commandArgs: string[] = [];
+    if (flow.isResume) commandArgs.push('--resume');
+    if (flow.dangerousSkipPermissions) commandArgs.push('--dangerously-skip-permissions');
+    const runAs = flow.runAsUser || client.username;
+    console.log(`[create] ${client.username} creating "${flow.name}" as ${runAs} (hidden=${flow.hidden} public=${flow.public} resume=${!!flow.isResume} danger=${flow.dangerousSkipPermissions})`);
+    const session = sessionManager.createSession(flow.name, client, runAs, 'claude', access, commandArgs);
     const state = clientState.get(client.id);
     if (state) {
       state.mode = 'session';
@@ -324,8 +335,10 @@ function launchDeepScan(client: Client): void {
   creationFlow.set(client.id, {
     step: 'name',
     name: '',
+    runAsUser: client.username,
     hidden: false,
     viewOnly: false,
+    dangerousSkipPermissions: false,
     public: true,
     selectedUsers: new Set(),
     selectedGroups: new Set(),
@@ -335,7 +348,7 @@ function launchDeepScan(client: Client): void {
     groupCursor: 0,
     buffer: '',
     isResume: true,
-  } as any);
+  });
   client.write('\x1b[2J\x1b[H');
   client.write(`\x1b[1mDeep scan — new session with Claude resume picker\x1b[0m (as ${client.username})\r\n\r\n`);
   client.write('Session name: ');
@@ -480,6 +493,28 @@ function handleCreationInput(client: Client, data: Buffer): void {
     if (str === '\r' || str === '\n') {
       if (flow.buffer.trim() === '') { client.write('\r\nName cannot be empty. Session name: '); return; }
       flow.name = flow.buffer.trim();
+      flow.buffer = '';
+      if (isAdmin(client.username)) {
+        flow.step = 'runas';
+        client.write(`\r\n\r\nRun as user [${client.username}]: `);
+      } else {
+        flow.step = 'hidden';
+        client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      }
+      return;
+    }
+    flow.buffer += str;
+    client.write(str);
+    return;
+  }
+
+  if (flow.step === 'runas') {
+    if (str === '\x7f' || str === '\b') {
+      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
+      return;
+    }
+    if (str === '\r' || str === '\n') {
+      flow.runAsUser = flow.buffer.trim() || client.username;
       flow.buffer = '';
       flow.step = 'hidden';
       client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
@@ -641,11 +676,31 @@ function handleCreationInput(client: Client, data: Buffer): void {
       return;
     }
     if (str === '\r' || str === '\n') {
-      finalizeSession(client);
+      if (isAdmin(client.username)) {
+        flow.step = 'dangermode';
+        client.write(`\r\n\r\nSkip permissions (--dangerously-skip-permissions)? [\x1b[1mN\x1b[0m/y]: `);
+      } else {
+        finalizeSession(client);
+      }
       return;
     }
     flow.buffer += str;
     client.write('*');  // mask password
+    return;
+  }
+
+  if (flow.step === 'dangermode') {
+    if (str === 'y' || str === 'Y') {
+      flow.dangerousSkipPermissions = true;
+      client.write('y');
+    } else if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
+      flow.dangerousSkipPermissions = false;
+      client.write('n');
+    } else {
+      return;
+    }
+    client.write('\r\n');
+    finalizeSession(client);
     return;
   }
 }
