@@ -83,9 +83,9 @@ export class Lobby {
 
     line('');
     line(`  ${color('[n]', 33)} New session`);
-    line(`  ${color('[R]', 33)} Restart previous session`);
-    line(`  ${color('[r]', 33)} Refresh`);
+    line(`  ${color('[r]', 33)} Restart previous session`);
     line(`  ${color('[q]', 33)} Quit`);
+    line(`  ${color('[space]', 90)} Refresh`);
     line('');
     line(color('─'.repeat(Math.min(cols - 6, 50)), 90));
 
@@ -126,9 +126,9 @@ export class Lobby {
     }
 
     if (str === 'n' || str === 'N') return { type: 'new' };
-    if (str === 'R') return { type: 'continue' };  // capital R only to avoid accidental trigger
+    if (str === 'r' || str === 'R') return { type: 'continue' };
     if (str === 'q' || str === 'Q') return { type: 'quit' };
-    if (str === 'r' || str === 'R') return { type: 'refresh' };
+    if (str === ' ') return { type: 'refresh' };
 
     return { type: 'none' };
   }
