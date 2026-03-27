@@ -7,10 +7,12 @@ import { Lobby } from './lobby.js';
 import { setScrollRegion } from './ansi.js';
 import { getClaudeUsers, getClaudeGroups, sanitizeGroupName } from './user-utils.js';
 import { listDeadSessions, type StoredSession } from './session-store.js';
+import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
 import { createHash } from 'crypto';
 import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { hostname } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +70,8 @@ function hashPassword(pw: string): string {
 const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
 
 const restartFlow: Map<string, { deadSessions: StoredSession[]; cursor: number }> = new Map();
+
+const exportFlow: Map<string, { sessions: ExportableSession[]; selected: Set<number>; cursor: number }> = new Map();
 
 const transport = new SSHTransport({
   port: config.port,
@@ -337,6 +341,122 @@ function launchDeepScan(client: Client): void {
   client.write('Session name: ');
 }
 
+function startExportFlow(client: Client): void {
+  const sessions = findUserSessions(client.username);
+  if (sessions.length === 0) {
+    client.write('\x1b[2J\x1b[H');
+    client.write('  No sessions found to export.\r\n\r\n  Press any key...');
+    // One-key return using restartFlow hack
+    exportFlow.set(client.id, { sessions: [], selected: new Set(), cursor: 0 });
+    return;
+  }
+  exportFlow.set(client.id, { sessions, selected: new Set(), cursor: 0 });
+  renderExportPicker(client);
+}
+
+function renderExportPicker(client: Client): void {
+  const flow = exportFlow.get(client.id);
+  if (!flow) return;
+
+  client.write('\x1b[2J\x1b[H');
+  client.write('  \x1b[1mExport sessions\x1b[0m\r\n');
+  client.write(`  \x1b[38;5;245mspace=toggle, a=select all, enter=export selected, esc=cancel\x1b[0m\r\n\r\n`);
+
+  for (let i = 0; i < flow.sessions.length; i++) {
+    const s = flow.sessions[i];
+    const arrow = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
+    const checked = flow.selected.has(i) ? '\x1b[32m[x]\x1b[0m' : '[ ]';
+    const label = s.name;
+    client.write(`  ${arrow} ${checked} ${label}\r\n`);
+  }
+
+  client.write(`\r\n  \x1b[38;5;245m${flow.selected.size} of ${flow.sessions.length} selected\x1b[0m\r\n`);
+}
+
+function handleExportInput(client: Client, data: Buffer): void {
+  const flow = exportFlow.get(client.id);
+  if (!flow) return;
+  const str = data.toString();
+
+  // No sessions — any key returns
+  if (flow.sessions.length === 0) {
+    exportFlow.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (str === '\x1b' && data.length === 1) {
+    exportFlow.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (str === '\x1b[A' || str === '\x1bOA') {
+    flow.cursor = Math.max(0, flow.cursor - 1);
+    renderExportPicker(client);
+    return;
+  }
+
+  if (str === '\x1b[B' || str === '\x1bOB') {
+    flow.cursor = Math.min(flow.sessions.length - 1, flow.cursor + 1);
+    renderExportPicker(client);
+    return;
+  }
+
+  // Space toggles
+  if (str === ' ') {
+    if (flow.selected.has(flow.cursor)) flow.selected.delete(flow.cursor);
+    else flow.selected.add(flow.cursor);
+    renderExportPicker(client);
+    return;
+  }
+
+  // A selects all
+  if (str === 'a' || str === 'A') {
+    if (flow.selected.size === flow.sessions.length) {
+      flow.selected.clear();
+    } else {
+      for (let i = 0; i < flow.sessions.length; i++) flow.selected.add(i);
+    }
+    renderExportPicker(client);
+    return;
+  }
+
+  // Enter exports
+  if (str === '\r' || str === '\n') {
+    if (flow.selected.size === 0) {
+      client.write('\r\n  No sessions selected.\r\n');
+      return;
+    }
+
+    const toExport = Array.from(flow.selected).map(i => flow.sessions[i]);
+    exportFlow.delete(client.id);
+
+    client.write('\x1b[2J\x1b[H');
+    client.write(`  Exporting ${toExport.length} session(s)...\r\n`);
+
+    try {
+      const zipPath = createExportZip(toExport, client.username);
+      client.write(`\r\n  \x1b[32mExport complete!\x1b[0m\r\n\r\n`);
+      client.write(`  Download with:\r\n`);
+      client.write(`  \x1b[36mscp -P 22 ${client.username}@${hostname()}:${zipPath} .\x1b[0m\r\n`);
+      client.write(`\r\n  Or from this machine:\r\n`);
+      client.write(`  \x1b[36m${zipPath}\x1b[0m\r\n`);
+      client.write(`\r\n  To install on another machine:\r\n`);
+      client.write(`  \x1b[36munzip claude-export-*.zip && ./install.sh\x1b[0m\r\n`);
+      client.write(`\r\n  Press any key to return to lobby...\r\n`);
+
+      // One-key return
+      exportFlow.set(client.id, { sessions: [], selected: new Set(), cursor: 0 });
+    } catch (err: any) {
+      client.write(`\r\n  \x1b[31mExport failed: ${err.message}\x1b[0m\r\n`);
+      client.write(`\r\n  Press any key to return...\r\n`);
+      exportFlow.set(client.id, { sessions: [], selected: new Set(), cursor: 0 });
+    }
+    return;
+  }
+}
+
 function handleCreationInput(client: Client, data: Buffer): void {
   const flow = creationFlow.get(client.id);
   if (!flow) return;
@@ -546,6 +666,11 @@ transport.onConnect((client) => {
       return;
     }
 
+    if (exportFlow.has(client.id)) {
+      handleExportInput(client, data);
+      return;
+    }
+
     if (restartFlow.has(client.id)) {
       handleRestartInput(client, data);
       return;
@@ -603,6 +728,8 @@ transport.onConnect((client) => {
             startNewSessionFlow(client);
           } else if (result.action === 'continue') {
             startResumeFlow(client);
+          } else if (result.action === 'export') {
+            startExportFlow(client);
           } else if (result.action === 'quit') {
             client.write('\r\nGoodbye!\r\n');
           } else if (result.action === 'refresh') {

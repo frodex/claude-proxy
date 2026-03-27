@@ -58,6 +58,7 @@ export class Lobby {
       items: [
         { label: 'New session', key: 'n', action: 'new' },
         { label: 'Restart previous session', key: 'r', action: 'continue' },
+        { label: 'Export sessions', key: 'e', action: 'export' },
         { label: 'Quit', key: 'q', action: 'quit' },
       ],
     });
