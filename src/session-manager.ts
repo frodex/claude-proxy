@@ -5,6 +5,7 @@ import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
+import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta } from './session-store.js';
 import { canUserAccessSession } from './user-utils.js';
@@ -22,6 +23,7 @@ interface ManagedSession extends Session {
   hotkeys: Map<string, HotkeyHandler>;
   scrollbackViewers: Map<string, ScrollbackViewer>;
   dumpMode: Set<string>;
+  helpMenu: Map<string, number>;  // client ID -> cursor position
   onClientDetach?: (client: Client) => void;
 }
 
@@ -87,6 +89,7 @@ export class SessionManager {
           hotkeys: new Map(),
           scrollbackViewers: new Map(),
           dumpMode: new Set(),
+      helpMenu: new Map(),
         };
 
         this.sessions.set(id, session);
@@ -153,6 +156,7 @@ export class SessionManager {
       hotkeys: new Map(),
       scrollbackViewers: new Map(),
       dumpMode: new Set(),
+      helpMenu: new Map(),
     };
 
     // Persist metadata for restart recovery
@@ -247,6 +251,41 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
+    // Help menu active
+    if (session.helpMenu.has(client.id)) {
+      const str = data.toString();
+      let cursor = session.helpMenu.get(client.id) ?? 0;
+
+      if (str === '\x1b' && data.length === 1) {
+        this.handleHelpAction(sessionId, client, 'back');
+        return;
+      }
+      if (str === '\x1b[A') {
+        cursor = nextSelectable(this.helpSections, cursor, -1);
+        session.helpMenu.set(client.id, cursor);
+        client.write(renderMenu({ title: 'claude-proxy help', sections: this.helpSections, footer: 'arrows to navigate, enter/space to select, esc to return', cursor }));
+        return;
+      }
+      if (str === '\x1b[B') {
+        cursor = nextSelectable(this.helpSections, cursor, 1);
+        session.helpMenu.set(client.id, cursor);
+        client.write(renderMenu({ title: 'claude-proxy help', sections: this.helpSections, footer: 'arrows to navigate, enter/space to select, esc to return', cursor }));
+        return;
+      }
+      if (str === '\r' || str === '\n' || str === ' ') {
+        const action = getActionAtCursor(this.helpSections, cursor);
+        if (action) this.handleHelpAction(sessionId, client, action);
+        return;
+      }
+      // Shortcut keys
+      const found = findItemByKey(this.helpSections, str);
+      if (found) {
+        this.handleHelpAction(sessionId, client, found.action);
+        return;
+      }
+      return;
+    }
+
     if (session.dumpMode.has(client.id)) {
       this.exitLessScrollback(sessionId, client);
       return;
@@ -290,47 +329,75 @@ export class SessionManager {
     }
   }
 
+  private helpSections: MenuSection[] = [
+    {
+      title: 'Session actions',
+      items: [
+        { label: 'Back to session', key: 'esc', action: 'back' },
+        { label: 'Detach (back to lobby)', key: 'd', action: 'detach' },
+        { label: 'Claim size ownership', key: 's', action: 'claimSize' },
+        { label: 'Redraw screen', key: 'r', action: 'redraw' },
+        { label: 'Scrollback dump (terminal scrollbar)', key: 'l', action: 'scrolldump' },
+        { label: 'Scrollback viewer (arrows/pgup/pgdn)', key: 'b', action: 'scrollview' },
+      ],
+    },
+    {
+      title: 'Info',
+      items: [
+        { label: 'Title bar: session | *owner, users | uptime', action: 'none', disabled: true },
+        { label: 'Sessions persist across proxy restarts', action: 'none', disabled: true },
+      ],
+    },
+  ];
+
   private showHelp(sessionId: string, client: Client): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
     session.pty.detach(client);
-    session.dumpMode.add(client.id);
+    session.helpMenu.set(client.id, 0);
 
-    const help = [
-      '',
-      '  \x1b[1mclaude-proxy help\x1b[0m',
-      '  ─────────────────────────────────────',
-      '',
-      '  \x1b[1mIn session:\x1b[0m  (press Ctrl+B, release, then key)',
-      '',
-      '    Ctrl+B  h     This help',
-      '    Ctrl+B  d     Detach (back to lobby)',
-      '    Ctrl+B  s     Claim size ownership',
-      '    Ctrl+B  r     Redraw screen',
-      '    Ctrl+B  l     Scrollback dump (use terminal scrollbar)',
-      '    Ctrl+B  b     Scrollback viewer (arrows/pgup/pgdn)',
-      '    Ctrl+B  Ctrl+B   Send literal Ctrl+B',
-      '',
-      '  \x1b[1mIn lobby:\x1b[0m',
-      '',
-      '    n         New session',
-      '    r         Refresh',
-      '    q         Quit',
-      '    Up/Down   Navigate sessions',
-      '    Enter/1-9 Join session',
-      '',
-      '  \x1b[1mTitle bar:\x1b[0m  session name | *owner, users | uptime',
-      '',
-      '  \x1b[1mSessions persist across proxy restarts (tmux-backed)\x1b[0m',
-      '',
-      '  ─────────────────────────────────────',
-      '  \x1b[7m Press any key to return \x1b[0m',
-      '',
-    ];
+    const output = renderMenu({
+      title: 'claude-proxy help',
+      sections: this.helpSections,
+      footer: 'arrows to navigate, enter/space to select, esc to return',
+      cursor: 0,
+    });
+    client.write(output);
+  }
 
-    client.write('\x1b[2J\x1b[H');
-    client.write(help.join('\r\n'));
+  private handleHelpAction(sessionId: string, client: Client, action: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    session.helpMenu.delete(client.id);
+
+    switch (action) {
+      case 'back':
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+        break;
+      case 'detach':
+        this.leaveSession(sessionId, client);
+        session.onClientDetach?.(client);
+        break;
+      case 'claimSize':
+        this.claimSizeOwner(sessionId, client);
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+        break;
+      case 'redraw':
+        this.redrawClient(sessionId, client);
+        break;
+      case 'scrolldump':
+        session.pty.attach(client);  // re-attach first
+        this.enterLessScrollback(sessionId, client);
+        break;
+      case 'scrollview':
+        session.pty.attach(client);
+        this.enterScrollback(sessionId, client);
+        break;
+    }
   }
 
   private updateTitle(sessionId: string): void {
