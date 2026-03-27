@@ -1,6 +1,7 @@
 // src/session-store.ts
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
+import { execSync } from 'child_process';
 import { join } from 'path';
 import type { SessionAccess } from './types.js';
 
@@ -57,7 +58,7 @@ export function listStoredSessions(): StoredSession[] {
  * List dead sessions — metadata exists but tmux session is gone
  */
 export function listDeadSessions(): StoredSession[] {
-  const { execSync } = require('child_process');
+  // execSync imported at top
   const stored = listStoredSessions();
 
   // Get running tmux sessions
