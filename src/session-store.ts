@@ -12,6 +12,7 @@ interface StoredSession {
   runAsUser: string;
   createdAt: string;
   access: SessionAccess;
+  claudeSessionId?: string;  // for resuming after tmux dies
 }
 
 export function ensureStoreDir(): void {
@@ -51,3 +52,24 @@ export function listStoredSessions(): StoredSession[] {
   }
   return sessions;
 }
+
+/**
+ * List dead sessions — metadata exists but tmux session is gone
+ */
+export function listDeadSessions(): StoredSession[] {
+  const { execSync } = require('child_process');
+  const stored = listStoredSessions();
+
+  // Get running tmux sessions
+  let running: Set<string>;
+  try {
+    const output = execSync("tmux list-sessions -F '#{session_name}' 2>/dev/null", { encoding: 'utf-8' }).trim();
+    running = new Set(output ? output.split('\n') : []);
+  } catch {
+    running = new Set();
+  }
+
+  return stored.filter(s => !running.has(s.tmuxId));
+}
+
+export type { StoredSession };

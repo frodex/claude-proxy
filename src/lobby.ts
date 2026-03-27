@@ -83,7 +83,7 @@ export class Lobby {
 
     line('');
     line(`  ${color('[n]', 33)} New session`);
-    line(`  ${color('[c]', 33)} Continue previous session`);
+    line(`  ${color('[R]', 33)} Restart previous session`);
     line(`  ${color('[r]', 33)} Refresh`);
     line(`  ${color('[q]', 33)} Quit`);
     line('');
@@ -126,7 +126,7 @@ export class Lobby {
     }
 
     if (str === 'n' || str === 'N') return { type: 'new' };
-    if (str === 'c' || str === 'C') return { type: 'continue' };
+    if (str === 'R') return { type: 'continue' };  // capital R only to avoid accidental trigger
     if (str === 'q' || str === 'Q') return { type: 'quit' };
     if (str === 'r' || str === 'R') return { type: 'refresh' };
 

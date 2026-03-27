@@ -6,6 +6,7 @@ import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
 import { setScrollRegion } from './ansi.js';
 import { getClaudeUsers, getClaudeGroups, sanitizeGroupName } from './user-utils.js';
+import { listDeadSessions, type StoredSession } from './session-store.js';
 import { createHash } from 'crypto';
 import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
@@ -45,6 +46,7 @@ const clientState: Map<string, {
 
 const creationFlow: Map<string, {
   step: 'name' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password';
+  isResume?: boolean;
   name: string;
   hidden: boolean;
   viewOnly: boolean;
@@ -65,7 +67,7 @@ function hashPassword(pw: string): string {
 
 const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
 
-// Resume flow removed — we launch claude --resume directly which has its own picker
+const restartFlow: Map<string, { deadSessions: StoredSession[]; cursor: number }> = new Map();
 
 const transport = new SSHTransport({
   port: config.port,
@@ -182,8 +184,9 @@ function finalizeSession(client: Client): void {
   };
 
   try {
-    console.log(`[create] ${client.username} creating "${flow.name}" (hidden=${flow.hidden} public=${flow.public} users=[${access.allowedUsers}] groups=[${access.allowedGroups}] password=${!!access.passwordHash})`);
-    const session = sessionManager.createSession(flow.name, client, client.username, 'claude', access);
+    const commandArgs = flow.isResume ? ['--resume'] : [];
+    console.log(`[create] ${client.username} creating "${flow.name}" (hidden=${flow.hidden} public=${flow.public} resume=${!!flow.isResume})`);
+    const session = sessionManager.createSession(flow.name, client, client.username, 'claude', access, commandArgs);
     const state = clientState.get(client.id);
     if (state) {
       state.mode = 'session';
@@ -202,33 +205,136 @@ function finalizeSession(client: Client): void {
 }
 
 function startResumeFlow(client: Client): void {
-  // Launch claude --resume (Claude's own interactive session picker) in a new tmux session
-  const sessionName = `resume-${client.username}-${Date.now()}`;
+  const dead = listDeadSessions().filter(s =>
+    s.access?.owner === client.username || s.runAsUser === client.username
+  );
 
-  try {
-    console.log(`[resume] ${client.username} launching claude --resume picker`);
-    const session = sessionManager.createSession(
-      sessionName,
-      client,
-      client.username,
-      'claude',
-      { owner: client.username, hidden: false, public: true, allowedUsers: [], allowedGroups: [], passwordHash: null, viewOnly: false },
-      ['--resume'],
-    );
+  restartFlow.set(client.id, { deadSessions: dead, cursor: 0 });
+  renderRestartPicker(client);
+}
 
-    const state = clientState.get(client.id);
-    if (state) {
-      state.mode = 'session';
-      state.sessionId = session.id;
+function renderRestartPicker(client: Client): void {
+  const flow = restartFlow.get(client.id);
+  if (!flow) return;
+
+  client.write('\x1b[2J\x1b[H');
+  client.write('\x1b[1mRestart previous session:\x1b[0m\r\n\r\n');
+
+  if (flow.deadSessions.length > 0) {
+    for (let i = 0; i < flow.deadSessions.length; i++) {
+      const s = flow.deadSessions[i];
+      const cursor = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
+      const date = new Date(s.createdAt).toLocaleDateString();
+      const vis = s.access?.public ? '' : ' (private)';
+      const vo = s.access?.viewOnly ? ' [view-only]' : '';
+      client.write(`  ${cursor} ${i + 1}. ${s.name}${vis}${vo} — ${date} @${s.access?.owner || s.runAsUser}\r\n`);
     }
-    sessionManager.setOnClientDetach(session.id, (detachedClient) => {
-      if (detachedClient.id === client.id) showLobby(client);
-    });
-    client.write('\x1b[2J\x1b[H');
-  } catch (err: any) {
-    client.write(`\r\nError: ${err.message}\r\n`);
-    showLobby(client);
+    client.write('\r\n');
+  } else {
+    client.write('  No dead sessions found.\r\n\r\n');
   }
+
+  // Deep scan is always the last option
+  const dsIdx = flow.deadSessions.length;
+  const dsCursor = flow.cursor === dsIdx ? '\x1b[33m>\x1b[0m' : ' ';
+  client.write(`  ${dsCursor} \x1b[36mD. Deep scan — browse all past Claude sessions\x1b[0m\r\n`);
+  client.write('\r\n  \x1b[90marrows to select, enter to restart, esc to cancel\x1b[0m\r\n');
+}
+
+function handleRestartInput(client: Client, data: Buffer): void {
+  const flow = restartFlow.get(client.id);
+  if (!flow) return;
+
+  const str = data.toString();
+  const totalOptions = flow.deadSessions.length + 1; // +1 for deep scan
+
+  if (str === '\x1b' && data.length === 1) {
+    restartFlow.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (str === '\x1b[A') {
+    flow.cursor = Math.max(0, flow.cursor - 1);
+    renderRestartPicker(client);
+    return;
+  }
+
+  if (str === '\x1b[B') {
+    flow.cursor = Math.min(totalOptions - 1, flow.cursor + 1);
+    renderRestartPicker(client);
+    return;
+  }
+
+  // D for deep scan shortcut
+  if (str === 'd' || str === 'D') {
+    restartFlow.delete(client.id);
+    launchDeepScan(client);
+    return;
+  }
+
+  if (str === '\r' || str === '\n') {
+    // Deep scan option (last item)
+    if (flow.cursor === flow.deadSessions.length) {
+      restartFlow.delete(client.id);
+      launchDeepScan(client);
+      return;
+    }
+
+    // Restart a dead session with its original settings
+    const dead = flow.deadSessions[flow.cursor];
+    restartFlow.delete(client.id);
+
+    try {
+      console.log(`[restart] ${client.username} restarting "${dead.name}" with original settings`);
+      const resumeArgs = dead.claudeSessionId ? ['--resume', dead.claudeSessionId] : ['--resume'];
+      const session = sessionManager.createSession(
+        dead.name,
+        client,
+        dead.runAsUser || client.username,
+        'claude',
+        dead.access,
+        resumeArgs,
+      );
+
+      const state = clientState.get(client.id);
+      if (state) {
+        state.mode = 'session';
+        state.sessionId = session.id;
+      }
+      sessionManager.setOnClientDetach(session.id, (detachedClient) => {
+        if (detachedClient.id === client.id) showLobby(client);
+      });
+      client.write('\x1b[2J\x1b[H');
+    } catch (err: any) {
+      client.write(`\r\nError: ${err.message}\r\n`);
+      setTimeout(() => showLobby(client), 2000);
+    }
+    return;
+  }
+}
+
+function launchDeepScan(client: Client): void {
+  // Go through session creation flow, then launch with --resume
+  // Reuse the creation flow but mark it as a resume
+  creationFlow.set(client.id, {
+    step: 'name',
+    name: '',
+    hidden: false,
+    viewOnly: false,
+    public: true,
+    selectedUsers: new Set(),
+    selectedGroups: new Set(),
+    availableUsers: getClaudeUsers().filter(u => u !== client.username),
+    availableGroups: getClaudeGroups(),
+    userCursor: 0,
+    groupCursor: 0,
+    buffer: '',
+    isResume: true,
+  } as any);
+  client.write('\x1b[2J\x1b[H');
+  client.write(`\x1b[1mDeep scan — new session with Claude resume picker\x1b[0m (as ${client.username})\r\n\r\n`);
+  client.write('Session name: ');
 }
 
 function handleCreationInput(client: Client, data: Buffer): void {
@@ -437,6 +543,11 @@ transport.onConnect((client) => {
 
     if (creationFlow.has(client.id)) {
       handleCreationInput(client, data);
+      return;
+    }
+
+    if (restartFlow.has(client.id)) {
+      handleRestartInput(client, data);
       return;
     }
 
