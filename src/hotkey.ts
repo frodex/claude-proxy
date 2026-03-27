@@ -39,19 +39,23 @@ export class HotkeyHandler {
           this.callbacks.onClaimSize();
           return;
         }
-        if (byte === 0x68) {  // 'h'
-          this.callbacks.onScrollback();
+        if (byte === 0x68) {  // 'h' — help
+          this.callbacks.onHelp();
+          return;
+        }
+        if (byte === 0x3f) {  // '?' — help (alias)
+          this.callbacks.onHelp();
           return;
         }
         if (byte === 0x72) {  // 'r'
           this.callbacks.onRedraw();
           return;
         }
-        if (byte === 0x3f) {  // '?'
-          this.callbacks.onHelp();
+        if (byte === 0x62) {  // 'b' — scrollback buffer viewer
+          this.callbacks.onScrollback();
           return;
         }
-        if (byte === 0x6c) {  // 'l'
+        if (byte === 0x6c) {  // 'l' — scrollback dump
           this.callbacks.onLessScrollback();
           return;
         }

@@ -75,7 +75,8 @@ export class PtyMultiplexer {
     const scriptPath = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
     writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
 
-    const tmuxCmd = `tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
+    const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
+    const tmuxCmd = `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
     console.log(`[tmux] command: ${tmuxCmd}`);
     try {
       execSync(tmuxCmd, { stdio: 'pipe' });
@@ -116,7 +117,8 @@ export class PtyMultiplexer {
 
   private attachToTmux(cols: number, rows: number): void {
     // Spawn a PTY that attaches to the tmux session
-    this.pty = spawn('tmux', ['attach-session', '-t', this.tmuxId], {
+    const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
+    this.pty = spawn('tmux', ['-f', confPath, 'attach-session', '-t', this.tmuxId], {
       name: 'xterm-256color',
       cols,
       rows,
