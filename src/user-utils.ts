@@ -122,19 +122,39 @@ export function getUserClaudeSessions(username: string): ClaudeSession[] {
         const sessionId = file.replace('.jsonl', '');
         try {
           const stat = statSync(filePath);
-          // Read first line for the initial message
+          // Skip tiny files (< 5KB likely empty/broken sessions)
+          if (stat.size < 5000) continue;
+
+          // Read first few KB to find the first user message
           const fd = openSync(filePath, 'r');
-          const buf = Buffer.alloc(1024);
-          readSync(fd, buf, 0, 1024, 0);
+          const buf = Buffer.alloc(4096);
+          const bytesRead = readSync(fd, buf, 0, 4096, 0);
           closeSync(fd);
-          const firstLine = buf.toString('utf-8').split('\n')[0];
+
+          const content = buf.toString('utf-8', 0, bytesRead);
+          const lines = content.split('\n').filter(l => l.trim());
+
           let firstMessage = '';
           let timestamp = stat.mtime;
-          try {
-            const parsed = JSON.parse(firstLine);
-            firstMessage = (parsed.content || '').substring(0, 80);
-            if (parsed.timestamp) timestamp = new Date(parsed.timestamp);
-          } catch {}
+
+          // Find first human/user message
+          for (const line of lines) {
+            try {
+              const parsed = JSON.parse(line);
+              if (parsed.timestamp && !timestamp) {
+                timestamp = new Date(parsed.timestamp);
+              }
+              // Look for actual user content
+              if (parsed.content && typeof parsed.content === 'string' && parsed.content.length > 2) {
+                firstMessage = parsed.content.substring(0, 80);
+                if (parsed.timestamp) timestamp = new Date(parsed.timestamp);
+                break;
+              }
+            } catch {}
+          }
+
+          // Skip sessions with no user content
+          if (!firstMessage) continue;
 
           sessions.push({
             sessionId,
