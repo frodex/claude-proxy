@@ -31,7 +31,8 @@ export interface SessionAccess {
   public: boolean;            // anyone can join
   allowedUsers: string[];     // usernames (when not public)
   allowedGroups: string[];    // cp- group names without prefix (when not public)
-  passwordHash: string | null; // bcrypt hash, null = no password
+  passwordHash: string | null; // hash, null = no password
+  viewOnly: boolean;           // only owner can type, others watch
 }
 
 export interface Session {

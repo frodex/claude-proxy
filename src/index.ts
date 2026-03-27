@@ -44,9 +44,10 @@ const clientState: Map<string, {
 }> = new Map();
 
 const creationFlow: Map<string, {
-  step: 'name' | 'hidden' | 'public' | 'users' | 'groups' | 'password';
+  step: 'name' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password';
   name: string;
   hidden: boolean;
+  viewOnly: boolean;
   public: boolean;
   selectedUsers: Set<string>;
   selectedGroups: Set<string>;
@@ -116,6 +117,7 @@ function startNewSessionFlow(client: Client): void {
     step: 'name',
     name: '',
     hidden: false,
+    viewOnly: false,
     public: true,
     selectedUsers: new Set(),
     selectedGroups: new Set(),
@@ -176,6 +178,7 @@ function finalizeSession(client: Client): void {
     allowedUsers: Array.from(flow.selectedUsers),
     allowedGroups: Array.from(flow.selectedGroups),
     passwordHash: flow.buffer ? hashPassword(flow.buffer) : null,
+    viewOnly: flow.viewOnly,
   };
 
   try {
@@ -342,16 +345,37 @@ function handleCreationInput(client: Client, data: Buffer): void {
     if (str === 'y' || str === 'Y') {
       flow.hidden = true;
       flow.public = false;
-      flow.step = 'password';
-      client.write('y\r\n\r\nPassword (enter for none): ');
-      flow.buffer = '';
+      flow.step = 'viewonly';
+      client.write('y\r\n\r\nView-only? (only you can type, others watch) [\x1b[1mN\x1b[0m/y]: ');
       return;
     }
     if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
       flow.hidden = false;
-      flow.step = 'public';
-      client.write('n\r\n\r\nPublic session? (anyone can join) [\x1b[1mY\x1b[0m/n]: ');
+      flow.step = 'viewonly';
+      client.write('n\r\n\r\nView-only? (only you can type, others watch) [\x1b[1mN\x1b[0m/y]: ');
       return;
+    }
+    return;
+  }
+
+  if (flow.step === 'viewonly') {
+    if (str === 'y' || str === 'Y') {
+      flow.viewOnly = true;
+      client.write('y');
+    } else if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
+      flow.viewOnly = false;
+      client.write('n');
+    } else {
+      return;
+    }
+    // If hidden, skip public/users/groups — go straight to password
+    if (flow.hidden) {
+      flow.step = 'password';
+      client.write('\r\n\r\nPassword (enter for none): ');
+      flow.buffer = '';
+    } else {
+      flow.step = 'public';
+      client.write('\r\n\r\nPublic session? (anyone can join) [\x1b[1mY\x1b[0m/n]: ');
     }
     return;
   }

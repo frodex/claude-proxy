@@ -58,6 +58,7 @@ export class SessionManager {
           allowedUsers: [],
           allowedGroups: [],
           passwordHash: null,
+          viewOnly: false,
         };
 
         const pty = PtyMultiplexer.reattach({
@@ -120,6 +121,7 @@ export class SessionManager {
       allowedUsers: access?.allowedUsers ?? [],
       allowedGroups: access?.allowedGroups ?? [],
       passwordHash: access?.passwordHash ?? null,
+      viewOnly: access?.viewOnly ?? false,
     };
 
     const pty = new PtyMultiplexer({
@@ -186,6 +188,10 @@ export class SessionManager {
 
     const hotkey = new HotkeyHandler({
       onPassthrough: (data) => {
+        // View-only: block input from non-owners
+        if (session.access.viewOnly && client.username !== session.access.owner) {
+          return;
+        }
         client.lastKeystroke = Date.now();
         session.statusBar.recordKeystroke(client.username);
         session.pty.write(data);
