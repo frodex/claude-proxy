@@ -8,7 +8,7 @@ import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta } from './session-store.js';
-import { canUserAccessSession, canUserEditSession } from './user-utils.js';
+import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups } from './user-utils.js';
 import type { Client, Session, SessionAccess } from './types.js';
 
 interface SessionManagerOptions {
@@ -24,7 +24,7 @@ interface ManagedSession extends Session {
   scrollbackViewers: Map<string, ScrollbackViewer>;
   dumpMode: Set<string>;
   helpMenu: Map<string, number>;
-  editMenu: Map<string, { step: string; cursor: number; buffer?: string }>;
+  editMenu: Map<string, { step: string; cursor: number; buffer?: string; pickerCursor?: number; pickerItems?: string[] }>;
   onClientDetach?: (client: Client) => void;
 }
 
@@ -285,94 +285,163 @@ export class SessionManager {
         return;
       }
 
-      // Sub-state: edit users (type username, enter to add, backspace on empty to remove last)
+      // Sub-state: edit allowed users (checkbox picker)
       if (edit.step === 'users') {
+        if (!edit.pickerItems) edit.pickerItems = getClaudeUsers().filter(u => u !== session.access.owner);
+        if (edit.pickerCursor === undefined) edit.pickerCursor = 0;
+        const selected = new Set(session.access.allowedUsers);
+        const totalItems = edit.pickerItems.length + 1;
+
         if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
-        if (str === '\x7f' || str === '\b') {
-          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
-          else if (session.access.allowedUsers.length > 0) {
-            const removed = session.access.allowedUsers.pop();
-            this.renderUserEditor(client, session.access.allowedUsers, '');
+        if (str === '\x1b[A' || str === '\x1bOA') {
+          edit.pickerCursor = Math.max(0, edit.pickerCursor - 1);
+          this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
+          return;
+        }
+        if (str === '\x1b[B' || str === '\x1bOB') {
+          edit.pickerCursor = Math.min(totalItems - 1, edit.pickerCursor + 1);
+          this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
+          return;
+        }
+        if (str === ' ' && edit.pickerCursor < edit.pickerItems.length) {
+          const user = edit.pickerItems[edit.pickerCursor];
+          if (selected.has(user)) {
+            session.access.allowedUsers = session.access.allowedUsers.filter(u => u !== user);
+          } else {
+            session.access.allowedUsers.push(user);
           }
+          this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, new Set(session.access.allowedUsers), edit.pickerCursor, edit.buffer || '');
           return;
         }
         if (str === '\r' || str === '\n') {
-          if (edit.buffer && edit.buffer.trim()) {
-            const user = edit.buffer.trim();
-            if (!session.access.allowedUsers.includes(user)) session.access.allowedUsers.push(user);
+          if (edit.pickerCursor === edit.pickerItems.length && edit.buffer && edit.buffer.trim()) {
+            const name = edit.buffer.trim();
+            if (!session.access.allowedUsers.includes(name)) session.access.allowedUsers.push(name);
+            if (!edit.pickerItems.includes(name)) edit.pickerItems.push(name);
             edit.buffer = '';
-          } else {
-            edit.step = 'menu';
-            this.renderEditMenu(sessionId, client);
+            this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, new Set(session.access.allowedUsers), edit.pickerCursor, '');
             return;
           }
-          this.renderUserEditor(client, session.access.allowedUsers, '');
+          edit.step = 'menu'; edit.pickerCursor = undefined; edit.pickerItems = undefined;
+          this.renderEditMenu(sessionId, client);
           return;
         }
-        if (!edit.buffer) edit.buffer = '';
-        edit.buffer += str;
-        client.write(str);
+        if (edit.pickerCursor === edit.pickerItems.length) {
+          if (str === '\x7f' || str === '\b') { if (edit.buffer && edit.buffer.length > 0) edit.buffer = edit.buffer.slice(0, -1); }
+          else { if (!edit.buffer) edit.buffer = ''; edit.buffer += str; }
+          this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, new Set(session.access.allowedUsers), edit.pickerCursor, edit.buffer || '');
+        }
         return;
       }
 
-      // Sub-state: edit groups
+      // Sub-state: edit allowed groups (checkbox picker)
       if (edit.step === 'groups') {
+        // getClaudeGroups imported at top
+        if (!edit.pickerItems) edit.pickerItems = getClaudeGroups().map(g => g.name);
+        if (edit.pickerCursor === undefined) edit.pickerCursor = 0;
+        const selected = new Set(session.access.allowedGroups);
+        const totalItems = edit.pickerItems.length + 1;
+
         if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
-        if (str === '\x7f' || str === '\b') {
-          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
-          else if (session.access.allowedGroups.length > 0) {
-            session.access.allowedGroups.pop();
-            this.renderGroupEditor(client, session.access.allowedGroups, '');
+        if (str === '\x1b[A' || str === '\x1bOA') {
+          edit.pickerCursor = Math.max(0, edit.pickerCursor - 1);
+          this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
+          return;
+        }
+        if (str === '\x1b[B' || str === '\x1bOB') {
+          edit.pickerCursor = Math.min(totalItems - 1, edit.pickerCursor + 1);
+          this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
+          return;
+        }
+        if (str === ' ' && edit.pickerCursor < edit.pickerItems.length) {
+          const group = edit.pickerItems[edit.pickerCursor];
+          if (selected.has(group)) {
+            session.access.allowedGroups = session.access.allowedGroups.filter(g => g !== group);
+          } else {
+            session.access.allowedGroups.push(group);
           }
+          this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, new Set(session.access.allowedGroups), edit.pickerCursor, edit.buffer || '');
           return;
         }
         if (str === '\r' || str === '\n') {
-          if (edit.buffer && edit.buffer.trim()) {
-            const group = edit.buffer.trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
-            if (group && !session.access.allowedGroups.includes(group)) session.access.allowedGroups.push(group);
+          if (edit.pickerCursor === edit.pickerItems.length && edit.buffer && edit.buffer.trim()) {
+            const name = edit.buffer.trim().replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+            if (name && !session.access.allowedGroups.includes(name)) session.access.allowedGroups.push(name);
+            if (name && !edit.pickerItems.includes(name)) edit.pickerItems.push(name);
             edit.buffer = '';
-          } else {
-            edit.step = 'menu';
-            this.renderEditMenu(sessionId, client);
+            this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, new Set(session.access.allowedGroups), edit.pickerCursor, '');
             return;
           }
-          this.renderGroupEditor(client, session.access.allowedGroups, '');
+          edit.step = 'menu'; edit.pickerCursor = undefined; edit.pickerItems = undefined;
+          this.renderEditMenu(sessionId, client);
           return;
         }
-        if (!edit.buffer) edit.buffer = '';
-        edit.buffer += str;
-        client.write(str);
+        if (edit.pickerCursor === edit.pickerItems.length) {
+          if (str === '\x7f' || str === '\b') { if (edit.buffer && edit.buffer.length > 0) edit.buffer = edit.buffer.slice(0, -1); }
+          else { if (!edit.buffer) edit.buffer = ''; edit.buffer += str; }
+          this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, new Set(session.access.allowedGroups), edit.pickerCursor, edit.buffer || '');
+        }
         return;
       }
 
-      // Sub-state: edit admins
+      // Sub-state: edit admins (checkbox picker)
       if (edit.step === 'admins') {
         if (!session.access.admins) session.access.admins = [];
+        if (!edit.pickerItems) edit.pickerItems = getClaudeUsers().filter(u => u !== session.access.owner);
+        if (edit.pickerCursor === undefined) edit.pickerCursor = 0;
+        const selected = new Set(session.access.admins);
+        const totalItems = edit.pickerItems.length + 1; // +1 for "type to add"
+
         if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
-        if (str === '\x7f' || str === '\b') {
-          if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); client.write('\b \b'); }
-          else if (session.access.admins.length > 0) {
-            session.access.admins.pop();
-            this.renderAdminEditor(client, session.access.admins, '');
-          }
+
+        if (str === '\x1b[A' || str === '\x1bOA') {
+          edit.pickerCursor = Math.max(0, edit.pickerCursor - 1);
+          this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
-        if (str === '\r' || str === '\n') {
-          if (edit.buffer && edit.buffer.trim()) {
-            const admin = edit.buffer.trim();
-            if (!session.access.admins.includes(admin)) session.access.admins.push(admin);
-            edit.buffer = '';
+        if (str === '\x1b[B' || str === '\x1bOB') {
+          edit.pickerCursor = Math.min(totalItems - 1, edit.pickerCursor + 1);
+          this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
+          return;
+        }
+
+        // Space toggles if on a user item
+        if (str === ' ' && edit.pickerCursor < edit.pickerItems.length) {
+          const user = edit.pickerItems[edit.pickerCursor];
+          if (selected.has(user)) {
+            session.access.admins = session.access.admins.filter(a => a !== user);
           } else {
-            edit.step = 'menu';
-            this.renderEditMenu(sessionId, client);
+            session.access.admins.push(user);
+          }
+          this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, new Set(session.access.admins), edit.pickerCursor, edit.buffer || '');
+          return;
+        }
+
+        // Enter — if on "type to add" with text, add it. Otherwise finish.
+        if (str === '\r' || str === '\n') {
+          if (edit.pickerCursor === edit.pickerItems.length && edit.buffer && edit.buffer.trim()) {
+            const name = edit.buffer.trim();
+            if (!session.access.admins.includes(name)) session.access.admins.push(name);
+            if (!edit.pickerItems.includes(name)) edit.pickerItems.push(name);
+            edit.buffer = '';
+            this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, new Set(session.access.admins), edit.pickerCursor, '');
             return;
           }
-          this.renderAdminEditor(client, session.access.admins, '');
+          edit.step = 'menu'; edit.pickerCursor = undefined; edit.pickerItems = undefined;
+          this.renderEditMenu(sessionId, client);
           return;
         }
-        if (!edit.buffer) edit.buffer = '';
-        edit.buffer += str;
-        client.write(str);
+
+        // Typing in the "type to add" field
+        if (edit.pickerCursor === edit.pickerItems.length) {
+          if (str === '\x7f' || str === '\b') {
+            if (edit.buffer && edit.buffer.length > 0) { edit.buffer = edit.buffer.slice(0, -1); }
+          } else {
+            if (!edit.buffer) edit.buffer = '';
+            edit.buffer += str;
+          }
+          this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, new Set(session.access.admins), edit.pickerCursor, edit.buffer || '');
+        }
         return;
       }
 
@@ -691,18 +760,42 @@ export class SessionManager {
     if (buffer) client.write(buffer);
   }
 
-  private renderAdminEditor(client: Client, admins: string[], buffer: string): void {
+  private renderCheckboxPicker(client: Client, title: string, note: string, allItems: string[], selected: Set<string>, cursor: number, buffer: string): void {
     client.write('\x1b[2J\x1b[H');
-    client.write('  \x1b[1mSession admins:\x1b[0m (can edit settings)\r\n\r\n');
-    if (admins.length > 0) {
-      admins.forEach(a => client.write(`    \x1b[36m${a}\x1b[0m\r\n`));
-    } else {
-      client.write(`    \x1b[38;5;245m(none — owner only)\x1b[0m\r\n`);
+    client.write(`  \x1b[1m${title}\x1b[0m\r\n`);
+    if (note) client.write(`  \x1b[38;5;245m${note}\x1b[0m\r\n`);
+    client.write('\r\n');
+
+    for (let i = 0; i < allItems.length; i++) {
+      const item = allItems[i];
+      const checked = selected.has(item);
+      const arrow = i === cursor ? '\x1b[33m>\x1b[0m' : ' ';
+      const box = checked ? '\x1b[32m[x]\x1b[0m' : '[ ]';
+      client.write(`  ${arrow} ${box} ${item}\r\n`);
     }
-    client.write('\r\n  \x1b[38;5;245mNote: users in cp-admins group are always admins\x1b[0m\r\n');
-    client.write('\r\n  Type username + enter to add, backspace to remove last\r\n');
-    client.write('  Empty enter to finish\r\n\r\n  > ');
-    if (buffer) client.write(buffer);
+
+    // "Type to add" option at the bottom
+    const addIdx = allItems.length;
+    const addArrow = cursor === addIdx ? '\x1b[33m>\x1b[0m' : ' ';
+    client.write(`\r\n  ${addArrow} Type to add: ${buffer}\r\n`);
+    client.write(`\r\n  \x1b[38;5;245mspace=toggle, enter=done, type name at bottom\x1b[0m\r\n`);
+  }
+
+  private renderAdminEditor(client: Client, admins: string[], buffer: string): void {
+    // Legacy — redirect to checkbox picker
+    const edit = this.getEditForClient(client);
+    if (!edit) return;
+    const allUsers = getClaudeUsers().filter(u => u !== 'root');
+    const selected = new Set(admins);
+    this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', allUsers, selected, edit.pickerCursor ?? 0, buffer);
+  }
+
+  private getEditForClient(client: Client): { step: string; cursor: number; buffer?: string; pickerCursor?: number; pickerItems?: string[] } | undefined {
+    for (const session of this.sessions.values()) {
+      const edit = session.editMenu.get(client.id);
+      if (edit) return edit as any;
+    }
+    return undefined;
   }
 
   private startEditSession(sessionId: string, client: Client): void {
