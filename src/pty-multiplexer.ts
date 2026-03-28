@@ -145,8 +145,9 @@ export class PtyMultiplexer {
 
   private attachToTmux(cols: number, rows: number): void {
     if (this.remoteHost) {
-      // Remote — SSH with forced PTY to attach to tmux on remote host
-      this.pty = spawn('ssh', ['-t', this.remoteHost, `tmux attach-session -t ${this.tmuxId}`], {
+      // Remote — SSH to attach to tmux on remote host
+      // node-pty provides the PTY, ssh -tt forces remote PTY allocation even without local tty
+      this.pty = spawn('ssh', ['-tt', this.remoteHost, 'tmux', 'attach-session', '-t', this.tmuxId], {
         name: 'xterm-256color',
         cols,
         rows,
