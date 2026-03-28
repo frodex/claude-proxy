@@ -16,6 +16,7 @@ interface PtyOptions {
   scrollbackBytes: number;
   tmuxSessionId: string;
   runAsUser?: string;
+  remoteHost?: string;
   onExit?: (code: number) => void;
 }
 
@@ -35,11 +36,13 @@ export class PtyMultiplexer {
   private maxScrollback: number;
   private vterm: InstanceType<typeof Terminal>;
   private tmuxId: string;
+  private remoteHost?: string;
   private onExitCallback?: (code: number) => void;
 
   constructor(options: PtyOptions) {
     this.maxScrollback = options.scrollbackBytes;
     this.tmuxId = options.tmuxSessionId;
+    this.remoteHost = options.remoteHost;
     this.onExitCallback = options.onExit;
 
     this.vterm = new Terminal({
@@ -71,21 +74,33 @@ export class PtyMultiplexer {
       }
     }
 
-    // Write inner command to a temp script to avoid quote escaping issues with nested su/tmux
-    const scriptPath = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
-    writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
+    if (this.remoteHost) {
+      // Remote session — SSH to host and create tmux session there
+      const remoteCmd = `tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} '${innerCommand}'`;
+      try {
+        execSync(`ssh ${this.remoteHost} "${remoteCmd}"`, { stdio: 'pipe' });
+        console.log(`[tmux] created remote session ${this.tmuxId} on ${this.remoteHost}`);
+      } catch (err: any) {
+        console.error(`[tmux] failed to create remote session: ${err.message}`);
+        throw err;
+      }
+    } else {
+      // Local session — use temp script to avoid quote escaping
+      const scriptPath = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
+      writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
 
-    const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
-    const tmuxCmd = `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
-    try {
-      execSync(tmuxCmd, { stdio: 'pipe' });
-      console.log(`[tmux] created session ${this.tmuxId}`);
-    } catch (err: any) {
-      console.error(`[tmux] failed to create session: ${err.message}`);
-      throw err;
+      const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
+      const tmuxCmd = `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
+      try {
+        execSync(tmuxCmd, { stdio: 'pipe' });
+        console.log(`[tmux] created session ${this.tmuxId}`);
+      } catch (err: any) {
+        console.error(`[tmux] failed to create session: ${err.message}`);
+        throw err;
+      }
     }
 
-    // Now attach to it via a PTY
+    // Attach to the session via a PTY
     this.attachToTmux(options.cols, options.rows);
   }
 
@@ -115,14 +130,24 @@ export class PtyMultiplexer {
   }
 
   private attachToTmux(cols: number, rows: number): void {
-    // Spawn a PTY that attaches to the tmux session
-    const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
-    this.pty = spawn('tmux', ['-f', confPath, 'attach-session', '-t', this.tmuxId], {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      env: process.env as Record<string, string>,
-    });
+    if (this.remoteHost) {
+      // Remote — SSH with forced PTY to attach to tmux on remote host
+      this.pty = spawn('ssh', ['-t', this.remoteHost, `tmux attach-session -t ${this.tmuxId}`], {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        env: process.env as Record<string, string>,
+      });
+    } else {
+      // Local — attach directly
+      const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
+      this.pty = spawn('tmux', ['-f', confPath, 'attach-session', '-t', this.tmuxId], {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        env: process.env as Record<string, string>,
+      });
+    }
 
     this.pty.onData((data: string) => {
       const buf = Buffer.from(data);
@@ -148,7 +173,10 @@ export class PtyMultiplexer {
 
   private isTmuxSessionAlive(): boolean {
     try {
-      execSync(`tmux has-session -t ${this.tmuxId}`, { stdio: 'pipe' });
+      const cmd = this.remoteHost
+        ? `ssh ${this.remoteHost} tmux has-session -t ${this.tmuxId}`
+        : `tmux has-session -t ${this.tmuxId}`;
+      execSync(cmd, { stdio: 'pipe' });
       return true;
     } catch {
       return false;
@@ -191,7 +219,10 @@ export class PtyMultiplexer {
     this.clients.clear();
     // Kill the tmux session
     try {
-      execSync(`tmux kill-session -t ${this.tmuxId}`, { stdio: 'pipe' });
+      const cmd = this.remoteHost
+        ? `ssh ${this.remoteHost} tmux kill-session -t ${this.tmuxId}`
+        : `tmux kill-session -t ${this.tmuxId}`;
+      execSync(cmd, { stdio: 'pipe' });
       console.log(`[tmux] killed session ${this.tmuxId}`);
     } catch {}
   }

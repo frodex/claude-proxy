@@ -14,6 +14,10 @@ export interface Config {
   lobby: {
     motd: string;
   };
+  remotes?: Array<{
+    name: string;
+    host: string;
+  }>;
 }
 
 export interface Client {

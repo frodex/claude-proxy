@@ -11,3 +11,9 @@ sessions:
 
 lobby:
   motd: "Welcome to claude-proxy"
+
+remotes:
+  - name: bigserver
+    host: bigserver
+  - name: cloudflare-droid
+    host: cloudflare-droid

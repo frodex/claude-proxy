@@ -110,6 +110,7 @@ export class SessionManager {
     command: string = 'claude',
     access?: Partial<SessionAccess>,
     commandArgs: string[] = [],
+    remoteHost?: string,
   ): Session {
     if (this.sessions.size >= this.options.maxSessions) {
       throw new Error(`Cannot create session: max sessions (${this.options.maxSessions}) reached`);
@@ -139,6 +140,7 @@ export class SessionManager {
       scrollbackBytes: this.options.scrollbackBytes,
       tmuxSessionId: tmuxId,
       runAsUser: user,
+      remoteHost,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
         deleteSessionMeta(tmuxId);

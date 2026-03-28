@@ -48,10 +48,12 @@ const clientState: Map<string, {
 }> = new Map();
 
 const creationFlow: Map<string, {
-  step: 'name' | 'runas' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password' | 'dangermode';
+  step: 'name' | 'runas' | 'server' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password' | 'dangermode';
   isResume?: boolean;
   name: string;
   runAsUser?: string;
+  remoteHost?: string;  // null = local
+  serverCursor?: number;
   hidden: boolean;
   viewOnly: boolean;
   dangerousSkipPermissions: boolean;
@@ -119,6 +121,25 @@ function joinSession(client: Client, sessionId: string): void {
       showLobby(client);
     }
   });
+}
+
+function renderServerPicker(client: Client, flow: { serverCursor?: number; remoteHost?: string }): void {
+  const remotes = config.remotes || [];
+  const cursor = flow.serverCursor ?? 0;
+
+  client.write('\x1b[2J\x1b[H');
+  client.write('  \x1b[1mRun on server:\x1b[0m\r\n\r\n');
+
+  // Local is always first option
+  const localArrow = cursor === 0 ? '\x1b[33m>\x1b[0m' : ' ';
+  client.write(`  ${localArrow} \x1b[33m[0]\x1b[0m local\r\n`);
+
+  for (let i = 0; i < remotes.length; i++) {
+    const arrow = cursor === i + 1 ? '\x1b[33m>\x1b[0m' : ' ';
+    client.write(`  ${arrow} \x1b[33m[${i + 1}]\x1b[0m ${remotes[i].name} \x1b[38;5;245m(${remotes[i].host})\x1b[0m\r\n`);
+  }
+
+  client.write('\r\n  \x1b[38;5;245marrows to select, enter to confirm\x1b[0m\r\n');
 }
 
 function isAdmin(username: string): boolean {
@@ -201,8 +222,9 @@ function finalizeSession(client: Client): void {
     if (flow.isResume) commandArgs.push('--resume');
     if (flow.dangerousSkipPermissions) commandArgs.push('--dangerously-skip-permissions');
     const runAs = flow.runAsUser || client.username;
-    console.log(`[create] ${client.username} creating "${flow.name}" as ${runAs} (hidden=${flow.hidden} public=${flow.public} resume=${!!flow.isResume} danger=${flow.dangerousSkipPermissions})`);
-    const session = sessionManager.createSession(flow.name, client, runAs, 'claude', access, commandArgs);
+    const remote = flow.remoteHost || undefined;
+    console.log(`[create] ${client.username} creating "${flow.name}" as ${runAs} on ${remote || 'local'}`);
+    const session = sessionManager.createSession(flow.name, client, runAs, 'claude', access, commandArgs, remote);
     const state = clientState.get(client.id);
     if (state) {
       state.mode = 'session';
@@ -519,12 +541,61 @@ function handleCreationInput(client: Client, data: Buffer): void {
     if (str === '\r' || str === '\n') {
       flow.runAsUser = flow.buffer.trim() || client.username;
       flow.buffer = '';
-      flow.step = 'hidden';
-      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      // If root and remotes configured, show server picker
+      if (client.username === 'root' && config.remotes && config.remotes.length > 0) {
+        flow.step = 'server';
+        flow.serverCursor = 0;
+        renderServerPicker(client, flow);
+      } else {
+        flow.step = 'hidden';
+        client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      }
       return;
     }
     flow.buffer += str;
     client.write(str);
+    return;
+  }
+
+  if (flow.step === 'server') {
+    const remotes = config.remotes || [];
+    const totalOptions = remotes.length + 1; // +1 for local
+
+    if (str === '\x1b[A' || str === '\x1bOA') {
+      flow.serverCursor = Math.max(0, (flow.serverCursor ?? 0) - 1);
+      renderServerPicker(client, flow);
+      return;
+    }
+    if (str === '\x1b[B' || str === '\x1bOB') {
+      flow.serverCursor = Math.min(totalOptions - 1, (flow.serverCursor ?? 0) + 1);
+      renderServerPicker(client, flow);
+      return;
+    }
+    // Number shortcut
+    if (/^[0-9]$/.test(str)) {
+      const idx = parseInt(str);
+      if (idx < totalOptions) {
+        flow.serverCursor = idx;
+        renderServerPicker(client, flow);
+      }
+      return;
+    }
+    if (str === '\r' || str === '\n' || str === ' ') {
+      const cursor = flow.serverCursor ?? 0;
+      if (cursor === 0) {
+        flow.remoteHost = undefined; // local
+      } else {
+        flow.remoteHost = remotes[cursor - 1].host;
+      }
+      flow.step = 'hidden';
+      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      return;
+    }
+    if (str === '\x1b' && data.length === 1) {
+      creationFlow.delete(client.id);
+      showLobby(client);
+      return;
+    }
     return;
   }
 
