@@ -17,3 +17,5 @@ remotes:
     host: bigserver
   - name: cloudflare-droid
     host: cloudflare-droid
+  - name: ct100
+    host: ct100
