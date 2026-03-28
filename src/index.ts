@@ -1,6 +1,7 @@
 // src/index.ts
 
 import { loadConfig } from './config.js';
+import { startApiServer } from './api-server.js';
 import { SSHTransport } from './ssh-transport.js';
 import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
@@ -920,3 +921,15 @@ process.on('SIGTERM', async () => {
 });
 
 transport.start();
+
+// Start API server for browser clients
+const apiPort = (config as any).api?.port ?? 3101;
+const apiHost = (config as any).api?.host ?? '127.0.0.1';
+const webDir = resolve(__dirname, '..', 'web');
+startApiServer({
+  port: apiPort,
+  host: apiHost,
+  sessionManager,
+  config,
+  staticDir: webDir,
+});
