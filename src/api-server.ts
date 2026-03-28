@@ -8,7 +8,24 @@ import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, resolve } from 'path';
 import { SessionManager } from './session-manager.js';
 import { lineToSpans, bufferToScreenState, type ScreenLine } from './screen-renderer.js';
-import type { Config } from './types.js';
+import type { Config, Session } from './types.js';
+
+function composeTitle(session: any): string {
+  const users = Array.from(session.clients.values()).map((c: any) => {
+    const prefix = c.id === session.sizeOwner ? '*' : '';
+    return `${prefix}${c.username}`;
+  });
+
+  const ms = Date.now() - new Date(session.createdAt).getTime();
+  const seconds = Math.floor(ms / 1000);
+  let uptime: string;
+  if (seconds < 60) uptime = `${seconds}s`;
+  else if (seconds < 3600) uptime = `${Math.floor(seconds / 60)}m`;
+  else { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); uptime = `${h}h${m > 0 ? m + 'm' : ''}`; }
+
+  const userStr = users.length > 0 ? users.join(', ') : 'no users';
+  return `${session.name} | ${userStr} | ${uptime}`;
+}
 
 // Key translation: structured browser input → PTY escape sequences
 const SPECIAL_KEYS: Record<string, string> = {
@@ -88,7 +105,7 @@ export function startApiServer(options: ApiServerOptions): void {
         return {
           id: s.id,
           name: s.name,
-          title: '', // populated by onTitleChange
+          title: composeTitle(s),
           cols: dims.cols,
           rows: dims.rows,
           clients: s.clients.size,
@@ -184,6 +201,7 @@ export function startApiServer(options: ApiServerOptions): void {
     // Send full screen state on connect
     const buffer = session.pty.getBuffer();
     const dims = session.pty.getScreenDimensions();
+    client.title = composeTitle(session);
     const fullState = bufferToScreenState(buffer, dims.cols, dims.rows, client.title);
     ws.send(JSON.stringify({ type: 'screen', ...fullState }));
 
@@ -220,6 +238,9 @@ export function startApiServer(options: ApiServerOptions): void {
           changed[String(lineIdx)] = { spans: lineToSpans(line, dims.cols) };
         }
       }
+
+      // Recompose title on every delta (users/uptime change)
+      client.title = composeTitle(session);
 
       const delta: any = {
         type: 'delta',
