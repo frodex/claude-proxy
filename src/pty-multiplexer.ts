@@ -244,6 +244,70 @@ export class PtyMultiplexer {
   /**
    * Detach cleanly — kills the PTY attach process but leaves tmux session alive
    */
+  // --- Event hooks for api-server / screen-renderer ---
+
+  /**
+   * Register callback for when screen content changes.
+   * Fires after vterm processes PTY data.
+   * start/end are viewport-relative row indices.
+   */
+  onScreenChange(callback: (startLine: number, endLine: number) => void): void {
+    (this.vterm as any).onRender(({ start, end }: { start: number; end: number }) => {
+      callback(start, end);
+    });
+  }
+
+  /**
+   * Register callback for cursor position changes.
+   */
+  onCursorChange(callback: () => void): void {
+    (this.vterm as any).onCursorMove(callback);
+  }
+
+  /**
+   * Register callback for terminal title changes (OSC 0/2).
+   */
+  onTitleChange(callback: (title: string) => void): void {
+    (this.vterm as any).onTitleChange(callback);
+  }
+
+  /**
+   * Read a single line from the xterm buffer.
+   * Index is absolute (0 = first scrollback line).
+   */
+  getScreenLine(lineIndex: number): any | undefined {
+    return this.vterm.buffer.active.getLine(lineIndex);
+  }
+
+  /**
+   * Get current screen dimensions and buffer geometry.
+   */
+  getScreenDimensions(): {
+    cols: number;
+    rows: number;
+    baseY: number;
+    length: number;
+    cursorX: number;
+    cursorY: number;
+  } {
+    const buf = this.vterm.buffer.active;
+    return {
+      cols: this.vterm.cols,
+      rows: this.vterm.rows,
+      baseY: buf.baseY,
+      length: buf.length,
+      cursorX: buf.cursorX,
+      cursorY: buf.cursorY,
+    };
+  }
+
+  /**
+   * Get the active buffer object directly (for screen-renderer).
+   */
+  getBuffer(): any {
+    return this.vterm.buffer.active;
+  }
+
   detachFromTmux(): void {
     if (this.pty) {
       this.pty.kill();
