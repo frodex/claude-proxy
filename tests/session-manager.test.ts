@@ -111,6 +111,44 @@ test('claimSizeOwner transfers ownership', () => {
   expect(updated?.sizeOwner).toBe('sam');
 });
 
+test('createSession threads workingDir into session', () => {
+  manager = new SessionManager({
+    defaultUser: 'root',
+    scrollbackBytes: 4096,
+    maxSessions: 10,
+  });
+
+  const client = makeClient('greg');
+  const session = manager.createSession(
+    uniqueName('workdir-test'),
+    client,
+    undefined,      // runAsUser
+    'cat',           // command
+    undefined,       // access
+    [],              // commandArgs
+    undefined,       // remoteHost
+    '/tmp',          // workingDir
+  );
+
+  expect(session.workingDir).toBe('/tmp');
+
+  const listed = manager.listSessions();
+  expect(listed[0].workingDir).toBe('/tmp');
+});
+
+test('createSession workingDir defaults to undefined', () => {
+  manager = new SessionManager({
+    defaultUser: 'root',
+    scrollbackBytes: 4096,
+    maxSessions: 10,
+  });
+
+  const client = makeClient('greg');
+  const session = manager.createSession(uniqueName('no-workdir'), client, undefined, 'cat');
+
+  expect(session.workingDir).toBeUndefined();
+});
+
 test('respects max sessions limit', () => {
   manager = new SessionManager({
     defaultUser: 'root',

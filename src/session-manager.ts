@@ -82,6 +82,7 @@ export class SessionManager {
           id,
           name: meta?.name ?? ts.name,
           runAsUser: meta?.runAsUser ?? this.options.defaultUser,
+          workingDir: meta?.workingDir,
           createdAt: meta ? new Date(meta.createdAt) : ts.created,
           sizeOwner: '',
           clients: new Map(),
@@ -111,6 +112,7 @@ export class SessionManager {
     access?: Partial<SessionAccess>,
     commandArgs: string[] = [],
     remoteHost?: string,
+    workingDir?: string,
   ): Session {
     if (this.sessions.size >= this.options.maxSessions) {
       throw new Error(`Cannot create session: max sessions (${this.options.maxSessions}) reached`);
@@ -141,6 +143,7 @@ export class SessionManager {
       tmuxSessionId: tmuxId,
       runAsUser: user,
       remoteHost,
+      workingDir,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
         deleteSessionMeta(tmuxId);
@@ -153,6 +156,7 @@ export class SessionManager {
       id: tmuxId,
       name,
       runAsUser: user,
+      workingDir,
       createdAt: new Date(),
       sizeOwner: creator.id,
       clients: new Map(),
@@ -171,6 +175,7 @@ export class SessionManager {
       tmuxId,
       name,
       runAsUser: user,
+      workingDir,
       createdAt: session.createdAt.toISOString(),
       access: sessionAccess,
     });
