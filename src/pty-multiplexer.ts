@@ -97,16 +97,25 @@ export class PtyMultiplexer {
       const user = options.runAsUser;
 
       // Build the wrapper script that cleans up, then calls the launcher
+      // If launcher exits non-zero, hold for user to read the error
       const wrapperLines = [
         '#!/bin/bash',
         `rm -f "${remoteScript}"`,
         `chmod +x "${remoteLauncher}"`,
       ];
       if (user) {
-        wrapperLines.push(`exec su - ${user} -c '${cdPrefix}${remoteLauncher}${argsStr}'`);
+        wrapperLines.push(`su - ${user} -c '${cdPrefix}${remoteLauncher}${argsStr}'`);
       } else {
-        wrapperLines.push(`${cdPrefix}exec "${remoteLauncher}"${argsStr}`);
+        wrapperLines.push(`${cdPrefix}"${remoteLauncher}"${argsStr}`);
       }
+      wrapperLines.push('EXIT_CODE=$?');
+      wrapperLines.push(`rm -f "${remoteLauncher}"`);
+      wrapperLines.push('if [ $EXIT_CODE -ne 0 ]; then');
+      wrapperLines.push('  echo ""');
+      wrapperLines.push('  echo "  Press Enter to return to lobby..."');
+      wrapperLines.push('  read');
+      wrapperLines.push('fi');
+      wrapperLines.push('exit $EXIT_CODE');
 
       // Write wrapper to a local temp file, then scp both scripts
       const localWrapper = `/tmp/claude-proxy-wrapper-${this.tmuxId}.sh`;
