@@ -96,26 +96,26 @@ export class PtyMultiplexer {
       const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
       const user = options.runAsUser;
 
-      // Build the wrapper script that cleans up, then calls the launcher
-      // If launcher exits non-zero, hold for user to read the error
+      // Build the wrapper script that cleans up, then calls the launcher.
+      // The launcher runs as root (for interactive install/update prompts).
+      // CLAUDE_PROXY_CD and CLAUDE_PROXY_USER env vars tell the launcher
+      // how to cd and su when it execs claude at the end.
       const wrapperLines = [
         '#!/bin/bash',
         `rm -f "${remoteScript}"`,
         `chmod +x "${remoteLauncher}"`,
+        `export CLAUDE_PROXY_CD='${options.workingDir?.replace(/'/g, "'\\''") || ''}'`,
+        `export CLAUDE_PROXY_USER='${user || ''}'`,
+        `"${remoteLauncher}"${argsStr}`,
+        'EXIT_CODE=$?',
+        `rm -f "${remoteLauncher}"`,
+        'if [ $EXIT_CODE -ne 0 ]; then',
+        '  echo ""',
+        '  echo "  Press Enter to return to lobby..."',
+        '  read',
+        'fi',
+        'exit $EXIT_CODE',
       ];
-      if (user) {
-        wrapperLines.push(`su - ${user} -c '${cdPrefix}${remoteLauncher}${argsStr}'`);
-      } else {
-        wrapperLines.push(`${cdPrefix}"${remoteLauncher}"${argsStr}`);
-      }
-      wrapperLines.push('EXIT_CODE=$?');
-      wrapperLines.push(`rm -f "${remoteLauncher}"`);
-      wrapperLines.push('if [ $EXIT_CODE -ne 0 ]; then');
-      wrapperLines.push('  echo ""');
-      wrapperLines.push('  echo "  Press Enter to return to lobby..."');
-      wrapperLines.push('  read');
-      wrapperLines.push('fi');
-      wrapperLines.push('exit $EXIT_CODE');
 
       // Write wrapper to a local temp file, then scp both scripts
       const localWrapper = `/tmp/claude-proxy-wrapper-${this.tmuxId}.sh`;

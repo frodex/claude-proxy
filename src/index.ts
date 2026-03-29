@@ -59,6 +59,8 @@ const creationFlow: Map<string, {
   isResume?: boolean;
   name: string;
   workingDir?: string;
+  workdirMode: 'picker' | 'freehand';
+  workdirCursor: number;
   runAsUser?: string;
   remoteHost?: string;
   serverCursor?: number;
@@ -158,6 +160,8 @@ function startNewSessionFlow(client: Client): void {
   creationFlow.set(client.id, {
     step: 'name',
     name: '',
+    workdirMode: 'picker',
+    workdirCursor: 0,
     runAsUser: client.username,
     hidden: false,
     viewOnly: false,
@@ -249,24 +253,73 @@ function tabComplete(partial: string): { completed: string; options: string[] } 
   return { completed: display, options: entries };
 }
 
+function getWorkdirItems(flow: { remoteHost?: string }): Array<{ path: string; label: string }> {
+  const items: Array<{ path: string; label: string }> = [];
+  items.push({ path: '~', label: '~ (home directory)' });
+
+  const history = dirScanner.getHistory();
+  const scanned = flow.remoteHost ? [] : dirScanner.scan();
+  const historySet = new Set(history);
+
+  for (const dir of history) {
+    items.push({ path: dir, label: dir });
+  }
+  for (const dir of scanned) {
+    if (!historySet.has(dir)) {
+      items.push({ path: dir, label: dir });
+    }
+  }
+  return items;
+}
+
 function renderWorkdirPrompt(client: Client, flow: ReturnType<typeof creationFlow.get>): void {
   if (!flow) return;
 
   client.write('\x1b[2J\x1b[H');
   const where = flow.remoteHost ? ` on \x1b[36m${flow.remoteHost}\x1b[0m` : '';
-  const tabHint = flow.remoteHost ? 'enter=confirm' : 'tab=complete, enter=confirm';
-  client.write(`\x1b[1mWorking directory${where}:\x1b[0m (${tabHint}, esc=cancel)\r\n`);
+  client.write(`\x1b[1mWorking directory${where}:\x1b[0m\r\n`);
 
-  const history = dirScanner.getHistory();
-  if (history.length > 0) {
-    client.write('\r\n  \x1b[38;5;245mRecent:\x1b[0m\r\n');
-    const shown = history.slice(0, 9);
-    for (let i = 0; i < shown.length; i++) {
-      client.write(`  \x1b[33m${i + 1}\x1b[0m) ${shown[i]}\r\n`);
+  if (flow.workdirMode === 'picker') {
+    const items = getWorkdirItems(flow);
+    const history = dirScanner.getHistory();
+    const scanned = flow.remoteHost ? [] : dirScanner.scan();
+    const historySet = new Set(history);
+
+    let idx = 0;
+    // Home
+    const homeArrow = idx === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
+    client.write(`\r\n  ${homeArrow} ~ (home directory)\r\n`);
+    idx++;
+
+    // Recent
+    if (history.length > 0) {
+      client.write('\r\n  \x1b[38;5;245mRecent:\x1b[0m\r\n');
+      for (const dir of history) {
+        const arrow = idx === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
+        client.write(`  ${arrow} ${dir}\r\n`);
+        idx++;
+      }
     }
-  }
 
-  client.write(`\r\n  Path [\x1b[38;5;245m~\x1b[0m]: ${flow.buffer}`);
+    // Projects (local only)
+    const projects = scanned.filter(d => !historySet.has(d));
+    if (projects.length > 0) {
+      client.write('\r\n  \x1b[38;5;245mProjects:\x1b[0m\r\n');
+      for (const dir of projects) {
+        const arrow = idx === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
+        client.write(`  ${arrow} ${dir}\r\n`);
+        idx++;
+      }
+    }
+
+    const tabHint = flow.remoteHost ? '' : ', tab=complete';
+    client.write(`\r\n  \x1b[38;5;245marrows=select, enter=choose, type=freehand${tabHint}, esc=cancel\x1b[0m\r\n`);
+  } else {
+    // Freehand mode
+    const tabHint = flow.remoteHost ? '' : ', tab=complete';
+    client.write(`  \x1b[38;5;245mesc=back to list${tabHint}\x1b[0m\r\n`);
+    client.write(`\r\n  Path: ${flow.buffer}`);
+  }
 }
 
 function finalizeSession(client: Client): void {
@@ -432,6 +485,8 @@ function launchDeepScan(client: Client): void {
   creationFlow.set(client.id, {
     step: 'name',
     name: '',
+    workdirMode: 'picker',
+    workdirCursor: 0,
     runAsUser: client.username,
     hidden: false,
     viewOnly: false,
@@ -606,12 +661,78 @@ function handleCreationInput(client: Client, data: Buffer): void {
   }
 
   if (flow.step === 'workdir') {
-    // Escape cancels
+    const advanceFromWorkdir = () => {
+      flow.step = 'hidden';
+      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+    };
+
+    // Escape
     if (str === '\x1b' && data.length === 1) {
-      creationFlow.delete(client.id);
-      showLobby(client);
+      if (flow.workdirMode === 'freehand') {
+        // Back to picker
+        flow.workdirMode = 'picker';
+        flow.buffer = '';
+        renderWorkdirPrompt(client, flow);
+      } else {
+        creationFlow.delete(client.id);
+        showLobby(client);
+      }
       return;
     }
+
+    if (flow.workdirMode === 'picker') {
+      const items = getWorkdirItems(flow);
+
+      // Arrow up
+      if (str === '\x1b[A' || str === '\x1bOA') {
+        flow.workdirCursor = Math.max(0, flow.workdirCursor - 1);
+        renderWorkdirPrompt(client, flow);
+        return;
+      }
+      // Arrow down
+      if (str === '\x1b[B' || str === '\x1bOB') {
+        flow.workdirCursor = Math.min(items.length - 1, flow.workdirCursor + 1);
+        renderWorkdirPrompt(client, flow);
+        return;
+      }
+      // Enter — select item and switch to freehand with it pre-filled
+      if (str === '\r' || str === '\n') {
+        const selected = items[flow.workdirCursor];
+        if (selected) {
+          if (selected.path === '~') {
+            flow.workingDir = undefined;
+            flow.buffer = '';
+            advanceFromWorkdir();
+          } else {
+            // Pre-fill freehand so user can append (e.g. /inspector)
+            flow.workdirMode = 'freehand';
+            flow.buffer = selected.path;
+            renderWorkdirPrompt(client, flow);
+          }
+        }
+        return;
+      }
+      // Space — select and advance immediately (no freehand edit)
+      if (str === ' ') {
+        const selected = items[flow.workdirCursor];
+        if (selected) {
+          flow.workingDir = selected.path === '~' ? undefined : selected.path;
+          flow.buffer = '';
+          advanceFromWorkdir();
+        }
+        return;
+      }
+      // Tab or / or any printable — switch to freehand
+      if (str === '\t' || str === '/' || (str.length === 1 && str >= ' ')) {
+        flow.workdirMode = 'freehand';
+        flow.buffer = str === '\t' ? '' : str;
+        renderWorkdirPrompt(client, flow);
+        return;
+      }
+      return;
+    }
+
+    // Freehand mode
     // Backspace
     if (str === '\x7f' || str === '\b') {
       if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
@@ -625,41 +746,25 @@ function handleCreationInput(client: Client, data: Buffer): void {
         flow.buffer = result.completed;
         renderWorkdirPrompt(client, flow);
       } else if (result.options.length > 1) {
-        // Show options
         client.write('\r\n');
         for (const opt of result.options) {
           client.write(`  ${opt}\r\n`);
         }
-        client.write(`\r\n  Path [~]: ${flow.buffer}`);
+        client.write(`\r\n  Path: ${flow.buffer}`);
       }
       return;
-    }
-    // Number shortcut for history
-    if (flow.buffer === '' && str >= '1' && str <= '9') {
-      const history = dirScanner.getHistory();
-      const idx = parseInt(str) - 1;
-      if (idx < history.length) {
-        flow.workingDir = history[idx];
-        flow.buffer = '';
-        flow.step = 'hidden';
-        client.write(`\r\n  \x1b[32m${history[idx]}\x1b[0m\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
-        return;
-      }
     }
     // Enter — confirm path
     if (str === '\r' || str === '\n') {
       const dir = flow.buffer.trim();
       if (!dir) {
-        // Empty = home directory (default)
         flow.workingDir = undefined;
-        flow.buffer = '';
       } else {
         const resolved = dir.startsWith('~') ? dir.replace('~', process.env.HOME || '/root') : dir;
         flow.workingDir = resolved;
-        flow.buffer = '';
       }
-      flow.step = 'hidden';
-      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      flow.buffer = '';
+      advanceFromWorkdir();
       return;
     }
     // Printable character

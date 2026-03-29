@@ -39,9 +39,10 @@ export class Lobby {
         const lock = s.access?.passwordHash ? ' [locked]' : '';
         const vis = s.access?.public === false ? ' (private)' : '';
         const vo = s.access?.viewOnly ? ' [view-only]' : '';
-        const owner = s.access?.owner ? ` @${s.access.owner}` : '';
+        const owner = s.access?.owner ? ` \x1b[38;5;245m@${s.access.owner}\x1b[0m` : '';
+        const host = s.remoteHost ? ` \x1b[36m@${s.remoteHost}\x1b[0m` : '';
         return {
-          label: `${s.name}${lock}${vis}${vo}${owner} (${userCount} ${userWord}) [${userNames}]`,
+          label: `${s.name}${lock}${vis}${vo}${owner}${host} (${userCount} ${userWord}) [${userNames}]`,
           key: `${i + 1}`,
           action: `join:${i}`,
         };

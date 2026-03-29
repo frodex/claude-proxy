@@ -147,5 +147,17 @@ else
   fi
 fi
 
-# Launch claude
-exec "$CLAUDE_BIN" $CLAUDE_ARGS
+# Launch claude — apply cd and su from wrapper env vars
+CD_PREFIX=""
+if [ -n "$CLAUDE_PROXY_CD" ]; then
+  CD_PREFIX="mkdir -p '$CLAUDE_PROXY_CD' && cd '$CLAUDE_PROXY_CD' && "
+fi
+
+if [ -n "$CLAUDE_PROXY_USER" ]; then
+  exec su -l "$CLAUDE_PROXY_USER" -c "${CD_PREFIX}\"$CLAUDE_BIN\" $CLAUDE_ARGS"
+else
+  if [ -n "$CLAUDE_PROXY_CD" ]; then
+    mkdir -p "$CLAUDE_PROXY_CD" && cd "$CLAUDE_PROXY_CD"
+  fi
+  exec "$CLAUDE_BIN" $CLAUDE_ARGS
+fi
