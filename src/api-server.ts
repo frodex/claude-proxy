@@ -9,6 +9,7 @@ import { join, extname, resolve } from 'path';
 import { SessionManager } from './session-manager.js';
 import { lineToSpans, bufferToScreenState, type ScreenLine } from './screen-renderer.js';
 import type { Config, Session } from './types.js';
+import { DirScanner } from './dir-scanner.js';
 
 function composeTitle(session: any): string {
   const users = Array.from(session.clients.values()).map((c: any) => {
@@ -67,6 +68,7 @@ interface ApiServerOptions {
   sessionManager: SessionManager;
   config: Config;
   staticDir: string;
+  dirScanner: DirScanner;
 }
 
 interface StreamClient {
@@ -80,7 +82,7 @@ interface StreamClient {
 }
 
 export function startApiServer(options: ApiServerOptions): void {
-  const { port, host, sessionManager, staticDir } = options;
+  const { port, host, sessionManager, staticDir, dirScanner } = options;
   const streamClients: Map<WebSocket, StreamClient> = new Map();
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -111,10 +113,24 @@ export function startApiServer(options: ApiServerOptions): void {
           clients: s.clients.size,
           owner: s.access?.owner,
           createdAt: s.createdAt.toISOString(),
+          workingDir: (s as any).workingDir || null,
         };
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(sessions));
+      return;
+    }
+
+    // API: directory history and scanned projects
+    if (url.pathname === '/api/directories' && req.method === 'GET') {
+      const history = dirScanner.getHistory();
+      const scanned = dirScanner.scan();
+      const historySet = new Set(history);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        history,
+        projects: scanned.filter(d => !historySet.has(d)),
+      }));
       return;
     }
 

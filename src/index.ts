@@ -1113,4 +1113,5 @@ startApiServer({
   sessionManager,
   config,
   staticDir: webDir,
+  dirScanner,
 });
