@@ -253,7 +253,9 @@ function renderWorkdirPrompt(client: Client, flow: ReturnType<typeof creationFlo
   if (!flow) return;
 
   client.write('\x1b[2J\x1b[H');
-  client.write('\x1b[1mWorking directory:\x1b[0m (tab=complete, enter=confirm, esc=cancel)\r\n');
+  const where = flow.remoteHost ? ` on \x1b[36m${flow.remoteHost}\x1b[0m` : '';
+  const tabHint = flow.remoteHost ? 'enter=confirm' : 'tab=complete, enter=confirm';
+  client.write(`\x1b[1mWorking directory${where}:\x1b[0m (${tabHint}, esc=cancel)\r\n`);
 
   const history = dirScanner.getHistory();
   if (history.length > 0) {
@@ -589,8 +591,13 @@ function handleCreationInput(client: Client, data: Buffer): void {
       if (flow.buffer.trim() === '') { client.write('\r\nName cannot be empty. Session name: '); return; }
       flow.name = flow.buffer.trim();
       flow.buffer = '';
-      flow.step = 'workdir';
-      renderWorkdirPrompt(client, flow);
+      if (isAdmin(client.username)) {
+        flow.step = 'runas';
+        client.write(`\r\n\r\nRun as user [${client.username}]: `);
+      } else {
+        flow.step = 'workdir';
+        renderWorkdirPrompt(client, flow);
+      }
       return;
     }
     flow.buffer += str;
@@ -610,8 +617,8 @@ function handleCreationInput(client: Client, data: Buffer): void {
       if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
       return;
     }
-    // Tab — filesystem completion
-    if (str === '\t') {
+    // Tab — filesystem completion (local only)
+    if (str === '\t' && !flow.remoteHost) {
       const input = flow.buffer || '~';
       const result = tabComplete(input);
       if (result.completed !== input) {
@@ -634,13 +641,8 @@ function handleCreationInput(client: Client, data: Buffer): void {
       if (idx < history.length) {
         flow.workingDir = history[idx];
         flow.buffer = '';
-        if (isAdmin(client.username)) {
-          flow.step = 'runas';
-          client.write(`\r\n  \x1b[32m${history[idx]}\x1b[0m\r\n\r\nRun as user [${client.username}]: `);
-        } else {
-          flow.step = 'hidden';
-          client.write(`\r\n  \x1b[32m${history[idx]}\x1b[0m\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
-        }
+        flow.step = 'hidden';
+        client.write(`\r\n  \x1b[32m${history[idx]}\x1b[0m\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
         return;
       }
     }
@@ -656,13 +658,8 @@ function handleCreationInput(client: Client, data: Buffer): void {
         flow.workingDir = resolved;
         flow.buffer = '';
       }
-      if (isAdmin(client.username)) {
-        flow.step = 'runas';
-        client.write(`\r\n\r\nRun as user [${client.username}]: `);
-      } else {
-        flow.step = 'hidden';
-        client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
-      }
+      flow.step = 'hidden';
+      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
       return;
     }
     // Printable character
@@ -685,8 +682,8 @@ function handleCreationInput(client: Client, data: Buffer): void {
         flow.serverCursor = 0;
         renderServerPicker(client, flow);
       } else {
-        flow.step = 'hidden';
-        client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+        flow.step = 'workdir';
+        renderWorkdirPrompt(client, flow);
       }
       return;
     }
@@ -725,8 +722,8 @@ function handleCreationInput(client: Client, data: Buffer): void {
       } else {
         flow.remoteHost = remotes[cursor - 1].host;
       }
-      flow.step = 'hidden';
-      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+      flow.step = 'workdir';
+      renderWorkdirPrompt(client, flow);
       return;
     }
     if (str === '\x1b' && data.length === 1) {
