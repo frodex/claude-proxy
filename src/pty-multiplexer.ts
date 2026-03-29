@@ -56,9 +56,10 @@ export class PtyMultiplexer {
     // Build the command to run inside tmux
     let innerCommand: string;
 
-    // Shell-safe quoting for working directory
+    // Shell-safe quoting for working directory (mkdir -p so new dirs work)
+    const safeDir = options.workingDir?.replace(/'/g, "'\\''");
     const cdPrefix = options.workingDir
-      ? `cd '${options.workingDir.replace(/'/g, "'\\''")}' && `
+      ? `mkdir -p '${safeDir}' && cd '${safeDir}' && `
       : '';
 
     if (this.remoteHost) {

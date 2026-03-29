@@ -121,16 +121,11 @@ export function startApiServer(options: ApiServerOptions): void {
       return;
     }
 
-    // API: directory history and scanned projects
+    // API: directory history for browser picker
     if (url.pathname === '/api/directories' && req.method === 'GET') {
       const history = dirScanner.getHistory();
-      const scanned = dirScanner.scan();
-      const historySet = new Set(history);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        history,
-        projects: scanned.filter(d => !historySet.has(d)),
-      }));
+      res.end(JSON.stringify({ history }));
       return;
     }
 
