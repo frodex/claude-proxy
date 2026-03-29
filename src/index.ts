@@ -5,12 +5,14 @@ import { startApiServer } from './api-server.js';
 import { SSHTransport } from './ssh-transport.js';
 import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
+import { DirScanner } from './dir-scanner.js';
 import { setScrollRegion } from './ansi.js';
 import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
 import { color } from './ansi.js';
 import { createHash } from 'crypto';
+import { existsSync } from 'fs';
 import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -38,6 +40,11 @@ const sessionManager = new SessionManager({
 
 const lobby = new Lobby({ motd: config.lobby.motd });
 
+const dirScanner = new DirScanner({
+  historyPath: resolve(__dirname, '..', 'data', 'dir-history.json'),
+});
+dirScanner.scan();
+
 // Discover existing tmux sessions from previous proxy instance
 sessionManager.discoverSessions();
 
@@ -49,11 +56,15 @@ const clientState: Map<string, {
 }> = new Map();
 
 const creationFlow: Map<string, {
-  step: 'name' | 'runas' | 'server' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password' | 'dangermode';
+  step: 'name' | 'workdir' | 'runas' | 'server' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password' | 'dangermode';
   isResume?: boolean;
   name: string;
+  workingDir?: string;
+  workdirCursor: number;
+  workdirCustom: boolean;
+  workdirFilter: string;
   runAsUser?: string;
-  remoteHost?: string;  // null = local
+  remoteHost?: string;
   serverCursor?: number;
   hidden: boolean;
   viewOnly: boolean;
@@ -151,6 +162,9 @@ function startNewSessionFlow(client: Client): void {
   creationFlow.set(client.id, {
     step: 'name',
     name: '',
+    workdirCursor: 0,
+    workdirCustom: false,
+    workdirFilter: '',
     runAsUser: client.username,
     hidden: false,
     viewOnly: false,
@@ -203,6 +217,72 @@ function renderGroupPicker(flow: ReturnType<typeof creationFlow.get>, client: Cl
   if (flow.buffer) client.write(flow.buffer);
 }
 
+function getFilteredWorkdirs(flow: { workdirFilter: string }): Array<{ path: string; label: string; section: 'home' | 'recent' | 'projects' | 'custom' }> {
+  const items: Array<{ path: string; label: string; section: 'home' | 'recent' | 'projects' | 'custom' }> = [];
+
+  items.push({ path: '~', label: '~ (home directory)', section: 'home' });
+
+  const history = dirScanner.getHistory();
+  const scanned = dirScanner.scan();
+  const historySet = new Set(history);
+
+  for (const dir of history) {
+    items.push({ path: dir, label: dir, section: 'recent' });
+  }
+  for (const dir of scanned) {
+    if (!historySet.has(dir)) {
+      items.push({ path: dir, label: dir, section: 'projects' });
+    }
+  }
+
+  items.push({ path: '', label: 'Custom path...', section: 'custom' });
+
+  if (flow.workdirFilter) {
+    const f = flow.workdirFilter.toLowerCase();
+    return items.filter(item =>
+      item.section === 'home' || item.section === 'custom' || item.path.toLowerCase().includes(f)
+    );
+  }
+
+  return items;
+}
+
+function renderWorkdirPicker(client: Client, flow: ReturnType<typeof creationFlow.get>): void {
+  if (!flow) return;
+
+  if (flow.workdirCustom) {
+    client.write('\x1b[2J\x1b[H');
+    client.write('\x1b[1mWorking directory:\x1b[0m (enter path, esc to go back)\r\n\r\n');
+    client.write(`  Path: ${flow.buffer}`);
+    return;
+  }
+
+  const items = getFilteredWorkdirs(flow);
+
+  client.write('\x1b[2J\x1b[H');
+  client.write('\x1b[1mWorking directory:\x1b[0m (arrows, enter, type to filter, esc=cancel)\r\n\r\n');
+
+  let lastSection = '';
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.section !== lastSection && item.section !== 'home' && item.section !== 'custom') {
+      if (item.section === 'recent') client.write('  \x1b[38;5;245mRecent:\x1b[0m\r\n');
+      if (item.section === 'projects') client.write('  \x1b[38;5;245mProjects:\x1b[0m\r\n');
+      lastSection = item.section;
+    }
+    const arrow = i === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
+    if (item.section === 'custom') {
+      client.write(`\r\n  ${arrow} \x1b[36m${item.label}\x1b[0m\r\n`);
+    } else {
+      client.write(`  ${arrow} ${item.label}\r\n`);
+    }
+  }
+
+  if (flow.workdirFilter) {
+    client.write(`\r\n  \x1b[38;5;245mFilter: ${flow.workdirFilter}\x1b[0m\r\n`);
+  }
+}
+
 function finalizeSession(client: Client): void {
   const flow = creationFlow.get(client.id);
   if (!flow) return;
@@ -225,7 +305,10 @@ function finalizeSession(client: Client): void {
     const runAs = flow.runAsUser || client.username;
     const remote = flow.remoteHost || undefined;
     console.log(`[create] ${client.username} creating "${flow.name}" as ${runAs} on ${remote || 'local'}`);
-    const session = sessionManager.createSession(flow.name, client, runAs, 'claude', access, commandArgs, remote);
+    const session = sessionManager.createSession(flow.name, client, runAs, 'claude', access, commandArgs, remote, flow.workingDir);
+    if (flow.workingDir) {
+      dirScanner.addToHistory(flow.workingDir);
+    }
     const state = clientState.get(client.id);
     if (state) {
       state.mode = 'session';
@@ -336,6 +419,8 @@ function handleRestartInput(client: Client, data: Buffer): void {
         'claude',
         dead.access,
         resumeArgs,
+        undefined,
+        dead.workingDir,
       );
 
       const state = clientState.get(client.id);
@@ -361,6 +446,9 @@ function launchDeepScan(client: Client): void {
   creationFlow.set(client.id, {
     step: 'name',
     name: '',
+    workdirCursor: 0,
+    workdirCustom: false,
+    workdirFilter: '',
     runAsUser: client.username,
     hidden: false,
     viewOnly: false,
@@ -520,6 +608,81 @@ function handleCreationInput(client: Client, data: Buffer): void {
       if (flow.buffer.trim() === '') { client.write('\r\nName cannot be empty. Session name: '); return; }
       flow.name = flow.buffer.trim();
       flow.buffer = '';
+      flow.step = 'workdir';
+      flow.workdirCursor = 0;
+      flow.workdirCustom = false;
+      flow.workdirFilter = '';
+      renderWorkdirPicker(client, flow);
+      return;
+    }
+    flow.buffer += str;
+    client.write(str);
+    return;
+  }
+
+  if (flow.step === 'workdir') {
+    if (flow.workdirCustom) {
+      if (str === '\x1b' && data.length === 1) {
+        flow.workdirCustom = false;
+        flow.buffer = '';
+        renderWorkdirPicker(client, flow);
+        return;
+      }
+      if (str === '\x7f' || str === '\b') {
+        if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
+        return;
+      }
+      if (str === '\r' || str === '\n') {
+        const dir = flow.buffer.trim();
+        if (!dir) { client.write('\r\n  Path cannot be empty.\r\n  Path: '); return; }
+        const resolved = dir.startsWith('~') ? dir.replace('~', process.env.HOME || '/root') : dir;
+        if (!existsSync(resolved)) {
+          client.write(`\r\n  \x1b[31mDirectory not found: ${resolved}\x1b[0m\r\n  Path: `);
+          flow.buffer = '';
+          return;
+        }
+        flow.workingDir = dir === '~' ? undefined : resolved;
+        flow.buffer = '';
+        if (isAdmin(client.username)) {
+          flow.step = 'runas';
+          client.write(`\r\n\r\nRun as user [${client.username}]: `);
+        } else {
+          flow.step = 'hidden';
+          client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
+        }
+        return;
+      }
+      flow.buffer += str;
+      client.write(str);
+      return;
+    }
+
+    const items = getFilteredWorkdirs(flow);
+
+    if (str === '\x1b[A' || str === '\x1bOA') {
+      flow.workdirCursor = Math.max(0, flow.workdirCursor - 1);
+      renderWorkdirPicker(client, flow);
+      return;
+    }
+    if (str === '\x1b[B' || str === '\x1bOB') {
+      flow.workdirCursor = Math.min(items.length - 1, flow.workdirCursor + 1);
+      renderWorkdirPicker(client, flow);
+      return;
+    }
+    if (str === '\r' || str === '\n' || str === ' ') {
+      const selected = items[flow.workdirCursor];
+      if (!selected) return;
+
+      if (selected.section === 'custom') {
+        flow.workdirCustom = true;
+        flow.buffer = '';
+        renderWorkdirPicker(client, flow);
+        return;
+      }
+
+      flow.workingDir = selected.path === '~' ? undefined : selected.path;
+      flow.workdirFilter = '';
+
       if (isAdmin(client.username)) {
         flow.step = 'runas';
         client.write(`\r\n\r\nRun as user [${client.username}]: `);
@@ -529,8 +692,26 @@ function handleCreationInput(client: Client, data: Buffer): void {
       }
       return;
     }
-    flow.buffer += str;
-    client.write(str);
+    if (str === '\x7f' || str === '\b') {
+      if (flow.workdirFilter.length > 0) {
+        flow.workdirFilter = flow.workdirFilter.slice(0, -1);
+        flow.workdirCursor = 0;
+        renderWorkdirPicker(client, flow);
+      }
+      return;
+    }
+    if (str === '\t' || str === '/') {
+      flow.workdirCustom = true;
+      flow.buffer = str === '/' ? '/' : '';
+      renderWorkdirPicker(client, flow);
+      return;
+    }
+    if (str.length === 1 && str >= ' ') {
+      flow.workdirFilter += str;
+      flow.workdirCursor = 0;
+      renderWorkdirPicker(client, flow);
+      return;
+    }
     return;
   }
 
