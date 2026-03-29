@@ -13,6 +13,7 @@ interface StoredSession {
   tmuxId: string;
   name: string;
   runAsUser: string;
+  workingDir?: string;
   createdAt: string;
   access: SessionAccess;
   claudeSessionId?: string;  // for resuming after tmux dies

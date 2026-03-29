@@ -17,6 +17,7 @@ interface PtyOptions {
   tmuxSessionId: string;
   runAsUser?: string;
   remoteHost?: string;
+  workingDir?: string;
   onExit?: (code: number) => void;
 }
 
@@ -83,6 +84,11 @@ export class PtyMultiplexer {
           innerCommand = [options.command, ...options.args].join(' ');
         }
       }
+    }
+
+    // Prepend cd to working directory if specified
+    if (options.workingDir) {
+      innerCommand = `cd ${options.workingDir} && ${innerCommand}`;
     }
 
     if (this.remoteHost) {

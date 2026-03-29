@@ -44,6 +44,7 @@ export interface Session {
   id: string;
   name: string;
   runAsUser: string;
+  workingDir?: string;
   createdAt: Date;
   sizeOwner: string;          // client id
   clients: Map<string, Client>;

@@ -97,6 +97,30 @@ test('detach stops sending output to client', async () => {
   mux.destroy();
 });
 
+test('launches tmux session with working directory', async () => {
+  const tmuxId = uniqueTmuxId();
+  const testDir = '/tmp';
+  const mux = new PtyMultiplexer({
+    command: 'bash',
+    args: ['-c', 'pwd && sleep 10'],
+    cols: 80,
+    rows: 24,
+    scrollbackBytes: 4096,
+    tmuxSessionId: tmuxId,
+    workingDir: testDir,
+  });
+
+  const c1 = makeClient('c1');
+  mux.attach(c1);
+
+  await new Promise(r => setTimeout(r, 1500));
+
+  const output = Buffer.concat(c1.written).toString();
+  expect(output).toContain('/tmp');
+
+  mux.destroy();
+});
+
 test('listTmuxSessions finds cp- prefixed sessions', async () => {
   const tmuxId = uniqueTmuxId();
   const mux = new PtyMultiplexer({
