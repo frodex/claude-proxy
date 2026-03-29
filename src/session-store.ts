@@ -14,6 +14,7 @@ interface StoredSession {
   name: string;
   runAsUser: string;
   workingDir?: string;
+  remoteHost?: string;
   createdAt: string;
   access: SessionAccess;
   claudeSessionId?: string;  // for resuming after tmux dies
@@ -58,22 +59,37 @@ export function listStoredSessions(): StoredSession[] {
 }
 
 /**
+ * List tmux session names on a remote host (or locally if host is undefined)
+ */
+export function listTmuxSessionNames(remoteHost?: string): Set<string> {
+  try {
+    const cmd = remoteHost
+      ? `ssh ${remoteHost} "tmux list-sessions -F '#{session_name}' 2>/dev/null"`
+      : "tmux list-sessions -F '#{session_name}' 2>/dev/null";
+    const output = execSync(cmd, { encoding: 'utf-8', timeout: 5000 }).trim();
+    return new Set(output ? output.split('\n') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * List dead sessions — metadata exists but tmux session is gone
  */
 export function listDeadSessions(): StoredSession[] {
-  // execSync imported at top
   const stored = listStoredSessions();
 
-  // Get running tmux sessions
-  let running: Set<string>;
-  try {
-    const output = execSync("tmux list-sessions -F '#{session_name}' 2>/dev/null", { encoding: 'utf-8' }).trim();
-    running = new Set(output ? output.split('\n') : []);
-  } catch {
-    running = new Set();
-  }
+  // Cache remote lookups by host to avoid repeated SSH calls
+  const runningByHost: Map<string, Set<string>> = new Map();
+  const getRunning = (host?: string): Set<string> => {
+    const key = host ?? '__local__';
+    if (!runningByHost.has(key)) {
+      runningByHost.set(key, listTmuxSessionNames(host));
+    }
+    return runningByHost.get(key)!;
+  };
 
-  return stored.filter(s => !running.has(s.tmuxId));
+  return stored.filter(s => !getRunning(s.remoteHost).has(s.tmuxId));
 }
 
 export type { StoredSession };

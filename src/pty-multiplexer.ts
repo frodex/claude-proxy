@@ -26,6 +26,7 @@ interface AttachOptions {
   cols: number;
   rows: number;
   scrollbackBytes: number;
+  remoteHost?: string;
   onExit?: (code: number) => void;
 }
 
@@ -135,6 +136,7 @@ export class PtyMultiplexer {
     mux.scrollbackSize = 0;
     mux.maxScrollback = options.scrollbackBytes;
     mux.tmuxId = options.tmuxSessionId;
+    mux.remoteHost = options.remoteHost;
     mux.onExitCallback = options.onExit;
 
     mux.vterm = new Terminal({

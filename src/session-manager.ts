@@ -7,7 +7,7 @@ import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
-import { saveSessionMeta, loadSessionMeta, deleteSessionMeta } from './session-store.js';
+import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames } from './session-store.js';
 import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups } from './user-utils.js';
 import type { Client, Session, SessionAccess } from './types.js';
 
@@ -45,62 +45,101 @@ export class SessionManager {
    * Discover existing tmux sessions from a previous proxy instance and reattach
    */
   discoverSessions(): void {
+    // Local sessions — find by listing tmux
     const tmuxSessions = PtyMultiplexer.listTmuxSessions();
-    console.log(`[discover] found ${tmuxSessions.length} existing tmux sessions`);
+    console.log(`[discover] found ${tmuxSessions.length} existing local tmux sessions`);
 
     for (const ts of tmuxSessions) {
-      const id = ts.tmuxId;
+      this.reattachSession(ts.tmuxId, ts.name, ts.created);
+    }
 
-      try {
-        // Load persisted metadata (access control, etc.)
-        const meta = loadSessionMeta(ts.tmuxId);
-        const sessionAccess: SessionAccess = meta?.access ?? {
-          owner: 'root',
-          hidden: false,
-          public: true,
-          allowedUsers: [],
-          allowedGroups: [],
-          passwordHash: null,
-          viewOnly: false,
-          admins: [],
-        };
+    // Remote sessions — check stored metadata for sessions with remoteHost
+    this.discoverRemoteSessions();
+  }
 
-        const pty = PtyMultiplexer.reattach({
-          tmuxSessionId: ts.tmuxId,
-          cols: 120,
-          rows: 40,
-          scrollbackBytes: this.options.scrollbackBytes,
-          onExit: (code) => {
-            console.log(`[session-exit] "${ts.name}" (${id}) exited with code ${code}`);
-            deleteSessionMeta(id);
-            this.sessions.delete(id);
-            this.onSessionEndCallback?.(id);
-          },
-        });
+  private discoverRemoteSessions(): void {
+    const stored = listStoredSessions();
+    const remoteSessions = stored.filter(s => s.remoteHost && !this.sessions.has(s.tmuxId));
 
-        const session: ManagedSession = {
-          id,
-          name: meta?.name ?? ts.name,
-          runAsUser: meta?.runAsUser ?? this.options.defaultUser,
-          workingDir: meta?.workingDir,
-          createdAt: meta ? new Date(meta.createdAt) : ts.created,
-          sizeOwner: '',
-          clients: new Map(),
-          access: sessionAccess,
-          pty,
-          statusBar: new StatusBar(),
-          hotkeys: new Map(),
-          scrollbackViewers: new Map(),
-          dumpMode: new Set(),
-      helpMenu: new Map(),
-      editMenu: new Map(),
-        };
+    // Group by host to minimize SSH calls
+    const byHost = new Map<string, typeof remoteSessions>();
+    for (const s of remoteSessions) {
+      const host = s.remoteHost!;
+      if (!byHost.has(host)) byHost.set(host, []);
+      byHost.get(host)!.push(s);
+    }
 
-        this.sessions.set(id, session);
-        console.log(`[discover] reattached to "${session.name}" (owner: ${sessionAccess.owner}, public: ${sessionAccess.public})`);
-      } catch (err: any) {
-        console.error(`[discover] failed to reattach to ${ts.tmuxId}: ${err.message}`);
+    for (const [host, sessions] of byHost) {
+      const running = listTmuxSessionNames(host);
+      console.log(`[discover] found ${running.size} tmux sessions on ${host}`);
+
+      for (const s of sessions) {
+        if (running.has(s.tmuxId)) {
+          this.reattachSession(s.tmuxId, s.name, new Date(s.createdAt), s);
+        }
       }
+    }
+  }
+
+  private reattachSession(
+    tmuxId: string,
+    name: string,
+    created: Date,
+    meta?: { name: string; runAsUser: string; workingDir?: string; remoteHost?: string; createdAt: string; access: SessionAccess },
+  ): void {
+    const id = tmuxId;
+    if (this.sessions.has(id)) return;
+
+    try {
+      if (!meta) meta = loadSessionMeta(tmuxId) ?? undefined;
+      const sessionAccess: SessionAccess = meta?.access ?? {
+        owner: 'root',
+        hidden: false,
+        public: true,
+        allowedUsers: [],
+        allowedGroups: [],
+        passwordHash: null,
+        viewOnly: false,
+        admins: [],
+      };
+
+      const pty = PtyMultiplexer.reattach({
+        tmuxSessionId: tmuxId,
+        cols: 120,
+        rows: 40,
+        scrollbackBytes: this.options.scrollbackBytes,
+        remoteHost: meta?.remoteHost,
+        onExit: (code) => {
+          console.log(`[session-exit] "${name}" (${id}) exited with code ${code}`);
+          deleteSessionMeta(id);
+          this.sessions.delete(id);
+          this.onSessionEndCallback?.(id);
+        },
+      });
+
+      const session: ManagedSession = {
+        id,
+        name: meta?.name ?? name,
+        runAsUser: meta?.runAsUser ?? this.options.defaultUser,
+        workingDir: meta?.workingDir,
+        createdAt: meta ? new Date(meta.createdAt) : created,
+        sizeOwner: '',
+        clients: new Map(),
+        access: sessionAccess,
+        pty,
+        statusBar: new StatusBar(),
+        hotkeys: new Map(),
+        scrollbackViewers: new Map(),
+        dumpMode: new Set(),
+        helpMenu: new Map(),
+        editMenu: new Map(),
+      };
+
+      this.sessions.set(id, session);
+      const where = meta?.remoteHost ? ` on ${meta.remoteHost}` : '';
+      console.log(`[discover] reattached to "${session.name}"${where} (owner: ${sessionAccess.owner}, public: ${sessionAccess.public})`);
+    } catch (err: any) {
+      console.error(`[discover] failed to reattach to ${tmuxId}: ${err.message}`);
     }
   }
 
@@ -176,6 +215,7 @@ export class SessionManager {
       name,
       runAsUser: user,
       workingDir,
+      remoteHost,
       createdAt: session.createdAt.toISOString(),
       access: sessionAccess,
     });
