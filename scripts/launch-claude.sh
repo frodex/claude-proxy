@@ -1,6 +1,9 @@
 #!/bin/bash
 # Launch claude for a user — installs if not found
 
+# Block Ctrl+Z — suspended Claude inside tmux is unrecoverable for users
+trap '' TSTP
+
 # Check if claude is available
 if command -v claude &>/dev/null; then
   exec claude "$@"

@@ -95,6 +95,14 @@ export function findItemByKey(sections: MenuSection[], key: string): { cursor: n
   return null;
 }
 
+/**
+ * Wrap a cursor within 0..total-1. Use for simple lists without disabled items.
+ */
+export function wrapCursor(current: number, total: number, direction: 1 | -1): number {
+  if (total <= 0) return 0;
+  return (current + direction + total) % total;
+}
+
 export function nextSelectable(sections: MenuSection[], cursor: number, direction: 1 | -1): number {
   const total = getTotalItems(sections);
   let next = cursor;

@@ -7,7 +7,7 @@ auth:
 sessions:
   default_user: root
   scrollback_bytes: 1048576
-  max_sessions: 10
+  max_sessions: 50
 
 lobby:
   motd: "Welcome to claude-proxy"
