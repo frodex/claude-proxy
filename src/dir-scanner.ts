@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { dirname, join } from 'path';
 
 const MAX_HISTORY = 50;
 
@@ -58,7 +58,41 @@ export class DirScanner {
   }
 
   private performScan(): string[] {
-    // placeholder — implemented in Task 2
-    return [];
+    const results: string[] = [];
+    const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build']);
+
+    const walk = (dir: string, depth: number): void => {
+      if (depth > this.maxDepth) return;
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return; // permission denied or not a directory
+      }
+      for (const entry of entries) {
+        if (SKIP_DIRS.has(entry)) continue;
+        if (entry.startsWith('.')) continue;
+        const full = join(dir, entry);
+        try {
+          if (!statSync(full).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        // Check if this directory is a git repo
+        if (existsSync(join(full, '.git'))) {
+          results.push(full);
+          continue; // don't recurse into git repos
+        }
+        walk(full, depth + 1);
+      }
+    };
+
+    for (const root of this.scanRoots) {
+      if (existsSync(root)) {
+        walk(root, 0);
+      }
+    }
+
+    return results.sort();
   }
 }
