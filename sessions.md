@@ -15,7 +15,7 @@
 
 Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory feature added (pick dir when creating sessions). Remote session reconnect on restart added. Remote launcher with install/update prompts added.
 
-**Next major refactor:** TUI widget system — extract 14+ duplicated arrow-key/picker/input handlers into a shared widget layer (ListPicker, TextInput, CheckboxPicker, ComboInput) with transport-agnostic rendering. This is prerequisite for web interface, svg-terminal unification, and OAuth flows.
+**Next major refactor (APPROVED):** TUI widget system — widgets (state machines) + flow engine (step chaining) + renderers (ANSI/JSON/spans). Widgets produce structured state, renderers convert per transport. Browser JS renders HTML from JSON over WebSocket. SSH gets server-side ANSI rendering. svg-terminal benefits from semantic UI data (knows "list picker with cursor on item 3" not just terminal text). Single spec covering all three layers.
 
 **Future:** svg-terminal integration, Docker packaging with Vault, web onboarding, Cloudflare Access auth, user registration/invite system.
 
@@ -57,7 +57,14 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 
 ## Session History (most recent first)
 
-### 2026-03-29 — Working directory + remote fixes
+### 2026-03-29 — Working directory + remote fixes + widget system design
+- Widget system architecture approved: widgets + flow engine + renderers
+- Key insight: svg-terminal doesn't *need* widgets (ANSI pipeline works), but benefits from semantic UI data for native rendering
+- Journal v0.2 written with direction confirmed
+- Research journal v0.1: 22 UI element inventory, framework survey (Bubbletea, Ink, Textual, Blessed, Ratatui)
+- Bibliography started with framework references
+
+#### Earlier in session
 - Added workdir feature: picker + freehand + tab-completion for session creation
 - Added remote session reconnect on proxy restart (persist remoteHost, scan remotes)
 - Added remote launcher with install/update prompts (launch-claude-remote.sh)
