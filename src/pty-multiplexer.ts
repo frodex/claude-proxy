@@ -56,13 +56,18 @@ export class PtyMultiplexer {
     // Build the command to run inside tmux
     let innerCommand: string;
 
+    // Shell-safe quoting for working directory
+    const cdPrefix = options.workingDir
+      ? `cd '${options.workingDir.replace(/'/g, "'\\''")}' && `
+      : '';
+
     if (this.remoteHost) {
       // Remote — use claude directly (it's installed on the remote host)
       const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
       if (options.runAsUser) {
-        innerCommand = `su - ${options.runAsUser} -c 'claude${argsStr}'`;
+        innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}claude${argsStr}'`;
       } else {
-        innerCommand = `claude${argsStr}`;
+        innerCommand = `${cdPrefix}claude${argsStr}`;
       }
     } else {
       // Local — use launcher script
@@ -70,25 +75,20 @@ export class PtyMultiplexer {
       if (options.runAsUser) {
         if (options.command === 'claude') {
           const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
-          innerCommand = `su - ${options.runAsUser} -c '${launcherPath}${argsStr}'`;
+          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${launcherPath}${argsStr}'`;
         } else {
           let commandPath = options.command;
           try { commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim(); } catch {}
           const fullCmd = [commandPath, ...options.args].join(' ');
-          innerCommand = `su - ${options.runAsUser} -c '${fullCmd}'`;
+          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${fullCmd}'`;
         }
       } else {
         if (options.command === 'claude') {
-          innerCommand = launcherPath;
+          innerCommand = `${cdPrefix}${launcherPath}`;
         } else {
-          innerCommand = [options.command, ...options.args].join(' ');
+          innerCommand = `${cdPrefix}${[options.command, ...options.args].join(' ')}`;
         }
       }
-    }
-
-    // Prepend cd to working directory if specified
-    if (options.workingDir) {
-      innerCommand = `cd ${options.workingDir} && ${innerCommand}`;
     }
 
     if (this.remoteHost) {

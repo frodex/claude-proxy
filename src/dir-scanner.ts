@@ -24,7 +24,9 @@ export class DirScanner {
   getHistory(): string[] {
     if (!existsSync(this.historyPath)) return [];
     try {
-      return JSON.parse(readFileSync(this.historyPath, 'utf-8'));
+      const data = JSON.parse(readFileSync(this.historyPath, 'utf-8'));
+      if (!Array.isArray(data)) return [];
+      return data.filter((d): d is string => typeof d === 'string');
     } catch {
       return [];
     }
@@ -71,7 +73,7 @@ export class DirScanner {
       }
       for (const entry of entries) {
         if (SKIP_DIRS.has(entry)) continue;
-        if (entry.startsWith('.')) continue;
+        if (entry.startsWith('.') && entry !== '.config') continue;
         const full = join(dir, entry);
         try {
           if (!statSync(full).isDirectory()) continue;
