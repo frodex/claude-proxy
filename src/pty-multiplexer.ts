@@ -90,38 +90,40 @@ export class PtyMultiplexer {
     }
 
     if (this.remoteHost) {
-      // Remote session — deploy launcher script, then run in tmux
+      // Remote session — scp launcher + wrapper scripts, then run in tmux
       const remoteScript = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
       const remoteLauncher = `/tmp/claude-proxy-launcher-${this.tmuxId}.sh`;
       const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
       const user = options.runAsUser;
 
-      // Read the remote launcher script template
-      const launcherTemplate = readFileSync(resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude-remote.sh'), 'utf-8');
-
-      // Build the wrapper script that sets up cd, su, and calls the launcher
-      const wrapperLines = ['#!/bin/bash', `rm -f "${remoteScript}"`];
-      // Deploy the launcher script
-      wrapperLines.push(`cat > "${remoteLauncher}" << 'LAUNCHER_EOF'`);
-      wrapperLines.push(launcherTemplate);
-      wrapperLines.push('LAUNCHER_EOF');
-      wrapperLines.push(`chmod +x "${remoteLauncher}"`);
-
+      // Build the wrapper script that cleans up, then calls the launcher
+      const wrapperLines = [
+        '#!/bin/bash',
+        `rm -f "${remoteScript}"`,
+        `chmod +x "${remoteLauncher}"`,
+      ];
       if (user) {
         wrapperLines.push(`exec su - ${user} -c '${cdPrefix}${remoteLauncher}${argsStr}'`);
       } else {
         wrapperLines.push(`${cdPrefix}exec "${remoteLauncher}"${argsStr}`);
       }
 
-      const scriptContent = wrapperLines.join('\n') + '\n';
+      // Write wrapper to a local temp file, then scp both scripts
+      const localWrapper = `/tmp/claude-proxy-wrapper-${this.tmuxId}.sh`;
+      const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude-remote.sh');
+      writeFileSync(localWrapper, wrapperLines.join('\n') + '\n', { mode: 0o755 });
 
       try {
-        // Write launch script on the remote host
-        execSync(`ssh ${this.remoteHost} "cat > ${remoteScript} << 'SCRIPT'\n${scriptContent}SCRIPT\nchmod +x ${remoteScript}"`, { stdio: 'pipe' });
-        // Create tmux session with the script
+        // Copy both scripts to remote
+        execSync(`scp -q "${launcherPath}" ${this.remoteHost}:${remoteLauncher}`, { stdio: 'pipe' });
+        execSync(`scp -q "${localWrapper}" ${this.remoteHost}:${remoteScript}`, { stdio: 'pipe' });
+        // Clean up local temp
+        try { unlinkSync(localWrapper); } catch {}
+        // Create tmux session with the wrapper script
         execSync(`ssh ${this.remoteHost} "tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${remoteScript}"`, { stdio: 'pipe' });
         console.log(`[tmux] created remote session ${this.tmuxId} on ${this.remoteHost}`);
       } catch (err: any) {
+        try { unlinkSync(localWrapper); } catch {}
         console.error(`[tmux] failed to create remote session: ${err.message}`);
         throw err;
       }
