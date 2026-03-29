@@ -3,7 +3,7 @@
 import { spawn, type IPty } from 'node-pty';
 import { execSync } from 'child_process';
 import { resolve } from 'path';
-import { writeFileSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import xtermHeadless from '@xterm/headless';
 const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
@@ -64,13 +64,9 @@ export class PtyMultiplexer {
       : '';
 
     if (this.remoteHost) {
-      // Remote — use claude directly (it's installed on the remote host)
-      const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
-      if (options.runAsUser) {
-        innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}claude${argsStr}'`;
-      } else {
-        innerCommand = `${cdPrefix}claude${argsStr}`;
-      }
+      // Remote — use the remote launcher script which handles install/update prompts
+      // The script is deployed to the remote host below in the launch block
+      innerCommand = '';  // built in the remote launch block
     } else {
       // Local — use launcher script
       const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude.sh');
@@ -94,11 +90,34 @@ export class PtyMultiplexer {
     }
 
     if (this.remoteHost) {
-      // Remote session — SSH to host, write a temp script there, run tmux with it
+      // Remote session — deploy launcher script, then run in tmux
       const remoteScript = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
+      const remoteLauncher = `/tmp/claude-proxy-launcher-${this.tmuxId}.sh`;
+      const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
+      const user = options.runAsUser;
+
+      // Read the remote launcher script template
+      const launcherTemplate = readFileSync(resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude-remote.sh'), 'utf-8');
+
+      // Build the wrapper script that sets up cd, su, and calls the launcher
+      const wrapperLines = ['#!/bin/bash', `rm -f "${remoteScript}"`];
+      // Deploy the launcher script
+      wrapperLines.push(`cat > "${remoteLauncher}" << 'LAUNCHER_EOF'`);
+      wrapperLines.push(launcherTemplate);
+      wrapperLines.push('LAUNCHER_EOF');
+      wrapperLines.push(`chmod +x "${remoteLauncher}"`);
+
+      if (user) {
+        wrapperLines.push(`exec su - ${user} -c '${cdPrefix}${remoteLauncher}${argsStr}'`);
+      } else {
+        wrapperLines.push(`${cdPrefix}exec "${remoteLauncher}"${argsStr}`);
+      }
+
+      const scriptContent = wrapperLines.join('\n') + '\n';
+
       try {
         // Write launch script on the remote host
-        execSync(`ssh ${this.remoteHost} "cat > ${remoteScript} << 'SCRIPT'\n#!/bin/bash\nrm -f ${remoteScript}\n${innerCommand}\nSCRIPT\nchmod +x ${remoteScript}"`, { stdio: 'pipe' });
+        execSync(`ssh ${this.remoteHost} "cat > ${remoteScript} << 'SCRIPT'\n${scriptContent}SCRIPT\nchmod +x ${remoteScript}"`, { stdio: 'pipe' });
         // Create tmux session with the script
         execSync(`ssh ${this.remoteHost} "tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${remoteScript}"`, { stdio: 'pipe' });
         console.log(`[tmux] created remote session ${this.tmuxId} on ${this.remoteHost}`);

@@ -62,18 +62,18 @@ else
   echo -e "        ${GREEN}Installed${NC} ${GRAY}($NODE_VER)${NC}"
 fi
 
-# Check/install Claude Code
+# Check/install Claude Code (self-updating native build)
 echo -n "  [4/6] Claude Code... "
 if ssh "$REMOTE" "which claude" &>/dev/null; then
   CLAUDE_VER=$(ssh "$REMOTE" "claude --version 2>/dev/null | head -1")
   echo -e "${GREEN}OK${NC} ${GRAY}($CLAUDE_VER)${NC}"
 else
   echo -e "${YELLOW}INSTALLING${NC}"
-  ssh "$REMOTE" "npm install -g @anthropic-ai/claude-code" 2>/dev/null || {
-    echo -e "        ${RED}FAILED${NC} — install Claude Code manually: npm install -g @anthropic-ai/claude-code"
+  ssh "$REMOTE" "curl -sL https://claude.ai/install.sh | bash" 2>/dev/null || {
+    echo -e "        ${RED}FAILED${NC} — install Claude Code manually: curl -sL https://claude.ai/install.sh | bash"
     exit 1
   }
-  CLAUDE_VER=$(ssh "$REMOTE" "claude --version 2>/dev/null | head -1")
+  CLAUDE_VER=$(ssh "$REMOTE" "PATH=\$HOME/.local/bin:\$PATH claude --version 2>/dev/null | head -1")
   echo -e "        ${GREEN}Installed${NC} ${GRAY}($CLAUDE_VER)${NC}"
 fi
 
