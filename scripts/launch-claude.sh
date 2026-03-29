@@ -1,8 +1,11 @@
 #!/bin/bash
 # Launch claude for a user — installs if not found
 
-# Block Ctrl+Z — suspended Claude inside tmux is unrecoverable for users
-trap '' TSTP
+# Block Ctrl+Z unless CLAUDE_PROXY_ALLOW_SUSPEND is set
+# Suspended Claude inside tmux is unrecoverable for most users
+if [ "${CLAUDE_PROXY_ALLOW_SUSPEND}" != "1" ]; then
+  trap '' TSTP
+fi
 
 # Check if claude is available
 if command -v claude &>/dev/null; then

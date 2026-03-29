@@ -8,6 +8,7 @@ sessions:
   default_user: root
   scrollback_bytes: 1048576
   max_sessions: 50
+  allow_suspend: false    # allow Ctrl+Z to suspend Claude (power user mode)
 
 lobby:
   motd: "Welcome to claude-proxy"
