@@ -3,6 +3,21 @@ host: 0.0.0.0
 
 auth:
   authorized_keys: ~/.ssh/authorized_keys
+  # OAuth providers (uncomment and configure to enable web auth)
+  # providers:
+  #   google:
+  #     client_id: "xxx.apps.googleusercontent.com"
+  #     client_secret: "xxx"
+  #   microsoft:
+  #     client_id: "xxx"
+  #     client_secret: "xxx"
+  #     tenant: "common"
+  #   github:
+  #     client_id: "xxx"
+  #     client_secret: "xxx"
+  # session:
+  #   secret: "change-me-to-a-random-string"
+  #   max_age: 86400
 
 sessions:
   default_user: root

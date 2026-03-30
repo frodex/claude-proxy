@@ -5,6 +5,17 @@ export interface Config {
   host: string;
   auth: {
     authorized_keys: string;
+    providers?: {
+      google?: { client_id: string; client_secret: string };
+      microsoft?: { client_id: string; client_secret: string; tenant?: string };
+      github?: { client_id: string; client_secret: string };
+    };
+    session?: {
+      secret: string;
+      max_age?: number;
+    };
+    auto_provision?: boolean;
+    default_groups?: string[];
   };
   sessions: {
     default_user: string;
