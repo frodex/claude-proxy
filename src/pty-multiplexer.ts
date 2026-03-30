@@ -311,8 +311,8 @@ export class PtyMultiplexer {
    * start/end are viewport-relative row indices.
    */
   onScreenChange(callback: (startLine: number, endLine: number) => void): void {
-    (this.vterm as any).onRender(({ start, end }: { start: number; end: number }) => {
-      callback(start, end);
+    this.vterm.onWriteParsed(() => {
+      callback(0, this.vterm.rows);
     });
   }
 
