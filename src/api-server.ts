@@ -5,10 +5,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { readFileSync, existsSync, statSync } from 'fs';
+import { execSync } from 'child_process';
 import { join, extname, resolve } from 'path';
 import { randomBytes } from 'crypto';
 import { SessionManager } from './session-manager.js';
-import { lineToSpans, bufferToScreenState, type ScreenLine } from './screen-renderer.js';
+import { lineToSpans, bufferToScreenState, PALETTE_256, type ScreenLine } from './screen-renderer.js';
 import type { Config, Session } from './types.js';
 import { DirScanner } from './dir-scanner.js';
 import type { OAuthManager } from './auth/oauth.js';
@@ -99,6 +100,64 @@ interface StreamClient {
   cursorDirty: boolean;
   title: string;
   pollTimer?: ReturnType<typeof setInterval>;
+}
+
+/**
+ * Parse a line of tmux capture-pane -e output (ANSI escape codes) into spans.
+ */
+function parseAnsiLine(raw: string): Array<{ text: string; fg?: string; bg?: string; bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; strikethrough?: boolean }> {
+  const spans: Array<any> = [];
+  let current: any = { text: '' };
+  let i = 0;
+
+  while (i < raw.length) {
+    if (raw[i] === '\x1b' && raw[i + 1] === '[') {
+      if (current.text) {
+        spans.push(current);
+        current = { ...current, text: '' };
+      }
+      const end = raw.indexOf('m', i + 2);
+      if (end === -1) { i++; continue; }
+      const codes = raw.slice(i + 2, end).split(';').map(Number);
+      i = end + 1;
+
+      for (let c = 0; c < codes.length; c++) {
+        const code = codes[c];
+        if (code === 0) { current = { text: '' }; }
+        else if (code === 1) { current.bold = true; }
+        else if (code === 2) { current.dim = true; }
+        else if (code === 3) { current.italic = true; }
+        else if (code === 4) { current.underline = true; }
+        else if (code === 9) { current.strikethrough = true; }
+        else if (code === 22) { delete current.bold; delete current.dim; }
+        else if (code === 23) { delete current.italic; }
+        else if (code === 24) { delete current.underline; }
+        else if (code === 29) { delete current.strikethrough; }
+        else if (code >= 30 && code <= 37) { current.fg = PALETTE_256[code - 30]; }
+        else if (code === 38 && codes[c + 1] === 5) { current.fg = PALETTE_256[codes[c + 2]] ?? undefined; c += 2; }
+        else if (code === 38 && codes[c + 1] === 2) {
+          current.fg = `#${codes[c+2].toString(16).padStart(2,'0')}${codes[c+3].toString(16).padStart(2,'0')}${codes[c+4].toString(16).padStart(2,'0')}`;
+          c += 4;
+        }
+        else if (code >= 40 && code <= 47) { current.bg = PALETTE_256[code - 40]; }
+        else if (code === 48 && codes[c + 1] === 5) { current.bg = PALETTE_256[codes[c + 2]] ?? undefined; c += 2; }
+        else if (code === 48 && codes[c + 1] === 2) {
+          current.bg = `#${codes[c+2].toString(16).padStart(2,'0')}${codes[c+3].toString(16).padStart(2,'0')}${codes[c+4].toString(16).padStart(2,'0')}`;
+          c += 4;
+        }
+        else if (code >= 90 && code <= 97) { current.fg = PALETTE_256[code - 90 + 8]; }
+        else if (code >= 100 && code <= 107) { current.bg = PALETTE_256[code - 100 + 8]; }
+        else if (code === 39) { delete current.fg; }
+        else if (code === 49) { delete current.bg; }
+      }
+    } else {
+      current.text += raw[i];
+      i++;
+    }
+  }
+
+  if (current.text) spans.push(current);
+  return spans;
 }
 
 export function startApiServer(options: ApiServerOptions): void {
@@ -489,31 +548,56 @@ export function startApiServer(options: ApiServerOptions): void {
         }
 
         if (msg.type === 'scroll') {
-          const offset = parseInt(msg.offset);
+          const offset = parseInt(msg.offset) || 0;
           const dims = session.pty.getScreenDimensions();
-          const maxOffset = Math.max(0, dims.baseY);
-          const clampedOffset = Math.max(0, Math.min(offset, maxOffset));
+          const tmuxId = session.pty.getTmuxId();
+          const socketPath = session.pty.getSocketPath();
+          const tmuxPrefix = socketPath ? `tmux -S ${socketPath}` : 'tmux';
 
-          // Read lines at the scrolled position
+          // Use tmux capture-pane for scroll — works with alternate screen
+          // -p = stdout, -e = include escapes, -S = start line, -E = end line
+          // Negative line numbers read from scrollback history
+          const startLine = offset > 0 ? -offset : 0;
+          const endLine = offset > 0 ? -offset + dims.rows - 1 : dims.rows - 1;
+          const captureCmd = `${tmuxPrefix} capture-pane -p -e -t ${tmuxId} -S ${startLine} -E ${endLine}`;
+
+          let capturedLines: string[];
+          try {
+            const output = execSync(captureCmd, { encoding: 'utf-8', timeout: 5000 });
+            capturedLines = output.split('\n');
+            // capture-pane adds trailing newline
+            if (capturedLines.length > 0 && capturedLines[capturedLines.length - 1] === '') {
+              capturedLines.pop();
+            }
+          } catch (err: any) {
+            console.error(`[api] scroll capture-pane failed: ${err.message}`);
+            capturedLines = [];
+          }
+
+          // Parse ANSI lines into span format
           const lines: any[] = [];
-          const startLine = dims.baseY - clampedOffset;
           for (let i = 0; i < dims.rows; i++) {
-            const line = session.pty.getScreenLine(startLine + i);
-            if (line) {
-              lines.push({ spans: lineToSpans(line, dims.cols) });
+            if (i < capturedLines.length) {
+              lines.push({ spans: parseAnsiLine(capturedLines[i]) });
             } else {
               lines.push({ spans: [] });
             }
           }
+
+          // Get max scrollback for client bounds
+          const maxScrollback = session.pty.getHistorySize();
 
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
               type: 'screen',
               width: dims.cols,
               height: dims.rows,
-              cursor: { x: dims.cursorX, y: dims.cursorY },
+              cursor: offset > 0
+                ? { x: 0, y: 0 }
+                : { x: dims.cursorX, y: dims.cursorY },
               title: client.title,
-              scrollOffset: clampedOffset,
+              scrollOffset: offset,
+              maxScrollback,
               lines,
             }));
           }

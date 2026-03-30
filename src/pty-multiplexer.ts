@@ -384,6 +384,23 @@ export class PtyMultiplexer {
     return this.tmuxId;
   }
 
+  getSocketPath(): string | undefined {
+    return this.socketPath;
+  }
+
+  getHistorySize(): number {
+    try {
+      const prefix = this.socketPath ? `tmux -S ${this.socketPath}` : 'tmux';
+      const output = execSync(
+        `${prefix} display-message -t ${this.tmuxId} -p '#{history_size}'`,
+        { encoding: 'utf-8', timeout: 2000 }
+      ).trim();
+      return parseInt(output) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
   getScrollbackText(): string {
     return Buffer.concat(this.scrollback).toString();
   }
