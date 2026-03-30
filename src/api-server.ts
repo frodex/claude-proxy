@@ -6,10 +6,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, resolve } from 'path';
+import { randomBytes } from 'crypto';
 import { SessionManager } from './session-manager.js';
 import { lineToSpans, bufferToScreenState, type ScreenLine } from './screen-renderer.js';
 import type { Config, Session } from './types.js';
 import { DirScanner } from './dir-scanner.js';
+import type { OAuthManager } from './auth/oauth.js';
+import type { GitHubAdapter } from './auth/github-adapter.js';
+import type { UserStore, Provisioner } from './auth/types.js';
 
 function composeTitle(session: any): string {
   const users = Array.from(session.clients.values()).map((c: any) => {
@@ -62,6 +66,15 @@ const MIME_TYPES: Record<string, string> = {
   '.ttf': 'font/ttf',
 };
 
+function parseCookies(header: string): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  header.split(';').forEach(pair => {
+    const [key, ...rest] = pair.trim().split('=');
+    if (key) cookies[key] = rest.join('=');
+  });
+  return cookies;
+}
+
 interface ApiServerOptions {
   port: number;
   host: string;
@@ -69,6 +82,13 @@ interface ApiServerOptions {
   config: Config;
   staticDir: string;
   dirScanner: DirScanner;
+  // Auth fields (all optional for backward compatibility)
+  oauthManager?: OAuthManager;
+  githubAdapter?: GitHubAdapter;
+  userStore?: UserStore;
+  provisioner?: Provisioner;
+  cookieSecret?: string;
+  cookieMaxAge?: number;
 }
 
 interface StreamClient {
@@ -82,10 +102,13 @@ interface StreamClient {
 }
 
 export function startApiServer(options: ApiServerOptions): void {
-  const { port, host, sessionManager, staticDir, dirScanner } = options;
+  const { port, host, sessionManager, staticDir, dirScanner,
+    oauthManager, githubAdapter, userStore, provisioner,
+    cookieSecret, cookieMaxAge } = options;
   const streamClients: Map<WebSocket, StreamClient> = new Map();
+  const pendingOAuthStates: Map<string, { provider: string; createdAt: number }> = new Map();
 
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     // CORS for local development
@@ -96,6 +119,158 @@ export function startApiServer(options: ApiServerOptions): void {
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // --- Auth routes ---
+
+    // GET /api/auth/providers
+    if (url.pathname === '/api/auth/providers' && req.method === 'GET') {
+      const providers: string[] = [];
+      if (oauthManager) providers.push(...oauthManager.getSupportedProviders());
+      if (githubAdapter) providers.push('github');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ providers }));
+      return;
+    }
+
+    // GET /api/auth/login
+    if (url.pathname === '/api/auth/login' && req.method === 'GET') {
+      const provider = url.searchParams.get('provider');
+      if (!provider) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'provider parameter required' }));
+        return;
+      }
+
+      // Generate random state
+      const state = randomBytes(16).toString('hex');
+      pendingOAuthStates.set(state, { provider, createdAt: Date.now() });
+
+      // Clean up old states (> 10 min)
+      const cutoff = Date.now() - 600000;
+      for (const [s, v] of pendingOAuthStates) {
+        if (v.createdAt < cutoff) pendingOAuthStates.delete(s);
+      }
+
+      try {
+        let authUrl: string;
+        if (provider === 'github' && githubAdapter) {
+          authUrl = githubAdapter.getAuthUrl(state);
+        } else if (oauthManager) {
+          authUrl = await oauthManager.getAuthUrl(provider, state);
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Provider "${provider}" not configured` }));
+          return;
+        }
+        res.writeHead(302, { Location: authUrl });
+        res.end();
+      } catch (err: any) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // GET /api/auth/callback
+    if (url.pathname === '/api/auth/callback' && req.method === 'GET') {
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+
+      if (!code || !state) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing code or state' }));
+        return;
+      }
+
+      const pending = pendingOAuthStates.get(state);
+      if (!pending) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or expired state' }));
+        return;
+      }
+      pendingOAuthStates.delete(state);
+
+      try {
+        let profile: { email: string; displayName: string; providerId: string };
+        if (pending.provider === 'github' && githubAdapter) {
+          profile = await githubAdapter.handleCallback(code);
+        } else if (oauthManager) {
+          profile = await oauthManager.handleCallback(pending.provider, url, state);
+        } else {
+          throw new Error('Provider not configured');
+        }
+
+        // Resolve user identity
+        const { resolveUser } = await import('./auth/resolve-user.js');
+        const result = resolveUser(
+          {
+            type: 'oauth',
+            provider: pending.provider,
+            providerId: profile.providerId,
+            email: profile.email,
+            displayName: profile.displayName,
+          },
+          userStore!,
+          provisioner!,
+        );
+
+        // Create session cookie
+        const { createSessionCookie } = await import('./auth/session-cookie.js');
+        const secret = cookieSecret || 'default-insecure-secret';
+        const maxAge = cookieMaxAge || 86400;
+        const cookie = createSessionCookie(
+          { linuxUser: result.identity.linuxUser, displayName: result.identity.displayName },
+          secret,
+          maxAge,
+        );
+
+        res.writeHead(302, {
+          Location: '/',
+          'Set-Cookie': `session=${cookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
+        });
+        res.end();
+      } catch (err: any) {
+        console.error('[auth] callback error:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Authentication failed' }));
+      }
+      return;
+    }
+
+    // GET /api/auth/me
+    if (url.pathname === '/api/auth/me' && req.method === 'GET') {
+      const { validateSessionCookie } = await import('./auth/session-cookie.js');
+      const cookieHeader = req.headers.cookie || '';
+      const cookies = parseCookies(cookieHeader);
+      const sessionCookie = cookies['session'];
+
+      if (!sessionCookie || !cookieSecret) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not authenticated' }));
+        return;
+      }
+
+      const payload = validateSessionCookie(sessionCookie, cookieSecret);
+      if (!payload) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or expired session' }));
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ user: payload }));
+      return;
+    }
+
+    // POST /api/auth/logout
+    if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Set-Cookie': 'session=; Path=/; HttpOnly; Max-Age=0',
+      });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
