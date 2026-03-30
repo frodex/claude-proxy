@@ -10,11 +10,17 @@ import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames } from './session-store.js';
 import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups } from './user-utils.js';
 import type { Client, Session, SessionAccess } from './types.js';
+import type { SocketManager } from './ugo/socket-manager.js';
+import type { GroupWatcher, SessionInfo } from './ugo/group-watcher.js';
+import type { Provisioner } from './auth/types.js';
 
 interface SessionManagerOptions {
   defaultUser: string;
   scrollbackBytes: number;
   maxSessions: number;
+  socketManager?: SocketManager;
+  groupWatcher?: GroupWatcher;
+  provisioner?: Provisioner;
 }
 
 interface ManagedSession extends Session {
@@ -32,13 +38,52 @@ export class SessionManager {
   private sessions: Map<string, ManagedSession> = new Map();
   private options: SessionManagerOptions;
   private onSessionEndCallback?: (sessionId: string) => void;
+  private socketManager?: SocketManager;
+  private groupWatcher?: GroupWatcher;
+  private provisioner?: Provisioner;
 
   constructor(options: SessionManagerOptions) {
     this.options = options;
+    this.socketManager = options.socketManager;
+    this.groupWatcher = options.groupWatcher;
+    this.provisioner = options.provisioner;
   }
 
   setOnSessionEnd(callback: (sessionId: string) => void): void {
     this.onSessionEndCallback = callback;
+  }
+
+  /**
+   * Start the group watcher for reactive enforcement of group-based access.
+   * When /etc/group changes, connected users who lost group membership are kicked.
+   */
+  startGroupWatcher(): void {
+    if (!this.groupWatcher) return;
+
+    this.groupWatcher.startWatching(
+      () => this.getSessionInfos(),
+      (sessionName, username) => {
+        const tmuxId = `cp-${sessionName.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        const session = this.sessions.get(tmuxId);
+        if (!session) return;
+        for (const [, client] of session.clients) {
+          if (client.username === username) {
+            this.leaveSession(tmuxId, client);
+          }
+        }
+      },
+    );
+  }
+
+  private getSessionInfos(): SessionInfo[] {
+    return Array.from(this.sessions.values())
+      .filter(s => s.socketPath)
+      .map(s => ({
+        sessionName: s.name,
+        sessionGroup: `sess-${s.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+        owner: s.access.owner,
+        connectedUsers: Array.from(s.clients.values()).map(c => c.username),
+      }));
   }
 
   /**
@@ -55,6 +100,18 @@ export class SessionManager {
 
     // Remote sessions — check stored metadata for sessions with remoteHost
     this.discoverRemoteSessions();
+
+    // Socket-based sessions — discover via SocketManager
+    if (this.socketManager) {
+      const aliveSockets = this.socketManager.discoverSockets();
+      for (const socketPath of aliveSockets) {
+        const filename = socketPath.split('/').pop()!;
+        const tmuxId = filename.replace('.sock', '');
+        if (!this.sessions.has(tmuxId)) {
+          this.reattachSession(tmuxId, tmuxId.replace(/^cp-/, ''), new Date());
+        }
+      }
+    }
   }
 
   private discoverRemoteSessions(): void {
@@ -85,7 +142,7 @@ export class SessionManager {
     tmuxId: string,
     name: string,
     created: Date,
-    meta?: { name: string; runAsUser: string; workingDir?: string; remoteHost?: string; createdAt: string; access: SessionAccess },
+    meta?: { name: string; runAsUser: string; workingDir?: string; remoteHost?: string; socketPath?: string; createdAt: string; access: SessionAccess },
   ): void {
     const id = tmuxId;
     if (this.sessions.has(id)) return;
@@ -109,6 +166,7 @@ export class SessionManager {
         rows: 40,
         scrollbackBytes: this.options.scrollbackBytes,
         remoteHost: meta?.remoteHost,
+        socketPath: meta?.socketPath,
         onExit: (code) => {
           console.log(`[session-exit] "${name}" (${id}) exited with code ${code}`);
           deleteSessionMeta(id);
@@ -123,6 +181,7 @@ export class SessionManager {
         runAsUser: meta?.runAsUser ?? this.options.defaultUser,
         workingDir: meta?.workingDir,
         remoteHost: meta?.remoteHost,
+        socketPath: meta?.socketPath,
         createdAt: meta ? new Date(meta.createdAt) : created,
         sizeOwner: '',
         clients: new Map(),
@@ -174,6 +233,9 @@ export class SessionManager {
       admins: access?.admins ?? [],
     };
 
+    // Generate socket path if socket manager is available
+    const socketPath = this.socketManager?.getSocketPath(safeName);
+
     const pty = new PtyMultiplexer({
       command,
       args: commandArgs,
@@ -184,6 +246,7 @@ export class SessionManager {
       runAsUser: user,
       remoteHost,
       workingDir,
+      socketPath,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
         deleteSessionMeta(tmuxId);
@@ -198,6 +261,7 @@ export class SessionManager {
       runAsUser: user,
       workingDir,
       remoteHost,
+      socketPath,
       createdAt: new Date(),
       sizeOwner: creator.id,
       clients: new Map(),
@@ -218,6 +282,7 @@ export class SessionManager {
       runAsUser: user,
       workingDir,
       remoteHost,
+      socketPath,
       createdAt: session.createdAt.toISOString(),
       access: sessionAccess,
     });
@@ -917,9 +982,22 @@ export class SessionManager {
    * List sessions visible to a specific user (filtered by access control)
    */
   listSessionsForUser(username: string): Session[] {
-    return Array.from(this.sessions.values()).filter(session =>
-      canUserAccessSession(username, session.access)
-    );
+    return Array.from(this.sessions.values()).filter(session => {
+      // Socket-based sessions with provisioner: use group-based access control
+      if (session.socketPath && this.provisioner) {
+        if (username === session.access.owner) return true;
+        if (session.access.hidden && username !== session.access.owner) return false;
+        const groups = this.provisioner.getGroups(username);
+        const sessionGroup = `sess-${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        if (session.access.public) {
+          return groups.includes('cp-users');
+        }
+        return groups.includes(sessionGroup) ||
+               session.access.allowedGroups.some(g => groups.includes(g));
+      }
+      // Legacy sessions: use existing ACL check
+      return canUserAccessSession(username, session.access);
+    });
   }
 
   /**
