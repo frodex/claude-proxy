@@ -41,6 +41,10 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 [2026-03-29] Remote sessions persist remoteHost in metadata — enables reconnect on proxy restart
 [2026-03-29] Remote launcher runs as root for interactive prompts, su only at final claude exec
 [2026-03-29] DirScanner scans for git repos + tracks MRU history for workdir picker
+[2026-03-29] Security model: OAuth → Linux user → Unix permissions are the security boundary, not proxy ACLs
+[2026-03-29] tmux sessions use -S custom sockets with UGO permissions for access control
+[2026-03-29] inotify on /etc/group for reactive enforcement when group membership changes externally
+[2026-03-29] Proxy ACLs (hidden, public, allowedUsers) become UI hints that map to Unix groups
 
 ---
 
