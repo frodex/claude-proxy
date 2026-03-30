@@ -20,3 +20,5 @@ Sources reviewed, referenced, or learned from during development.
 | [tmux-share](https://github.com/Chouser/tmux-share) | 2026-03-29 | Pattern reference for symlink-based session discovery and periodic permission verification. Minimal but demonstrates the right architecture. |
 | [GNU screen multiuser docs](https://aperiodic.net/screen/multiuser) | 2026-03-29 | Design reference for per-window per-command ACL granularity. Not adopted — requires setuid root. |
 | [tmate architecture](https://viennot.com/tmate.pdf) | 2026-03-29 | Namespace-based session isolation model. Reference for future sandboxing. Not adopted — relay architecture wrong for local sharing. |
+| [better-sqlite3-multiple-ciphers](https://github.com/m4heshd/better-sqlite3-multiple-ciphers) | 2026-03-29 | SQLite with encryption. Chosen for user store — full-DB encryption, synchronous API, actively maintained. Vault Transit planned for Docker migration. |
+| [openid-client (Node.js)](https://github.com/panva/node-openid-client) | 2026-03-29 | OIDC-compliant OAuth library for Node.js. Handles Google/Microsoft via discovery URL. GitHub needs custom adapter. |
