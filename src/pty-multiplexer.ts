@@ -18,6 +18,7 @@ interface PtyOptions {
   runAsUser?: string;
   remoteHost?: string;
   workingDir?: string;
+  socketPath?: string;
   onExit?: (code: number) => void;
 }
 
@@ -27,6 +28,7 @@ interface AttachOptions {
   rows: number;
   scrollbackBytes: number;
   remoteHost?: string;
+  socketPath?: string;
   onExit?: (code: number) => void;
 }
 
@@ -39,12 +41,14 @@ export class PtyMultiplexer {
   private vterm: InstanceType<typeof Terminal>;
   private tmuxId: string;
   private remoteHost?: string;
+  private socketPath?: string;
   private onExitCallback?: (code: number) => void;
 
   constructor(options: PtyOptions) {
     this.maxScrollback = options.scrollbackBytes;
     this.tmuxId = options.tmuxSessionId;
     this.remoteHost = options.remoteHost;
+    this.socketPath = options.socketPath;
     this.onExitCallback = options.onExit;
 
     this.vterm = new Terminal({
@@ -142,7 +146,9 @@ export class PtyMultiplexer {
       writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
 
       const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
-      const tmuxCmd = `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
+      const tmuxCmd = this.socketPath
+        ? `tmux -S ${this.socketPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`
+        : `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
       try {
         execSync(tmuxCmd, { stdio: 'pipe' });
         console.log(`[tmux] created session ${this.tmuxId}`);
@@ -167,6 +173,7 @@ export class PtyMultiplexer {
     mux.maxScrollback = options.scrollbackBytes;
     mux.tmuxId = options.tmuxSessionId;
     mux.remoteHost = options.remoteHost;
+    mux.socketPath = options.socketPath;
     mux.onExitCallback = options.onExit;
 
     mux.vterm = new Terminal({
@@ -192,8 +199,16 @@ export class PtyMultiplexer {
         rows,
         env: process.env as Record<string, string>,
       });
+    } else if (this.socketPath) {
+      // Local — attach via custom socket
+      this.pty = spawn('tmux', ['-S', this.socketPath, 'attach-session', '-t', this.tmuxId], {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        env: process.env as Record<string, string>,
+      });
     } else {
-      // Local — attach directly
+      // Local — attach via default server
       const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
       this.pty = spawn('tmux', ['-f', confPath, 'attach-session', '-t', this.tmuxId], {
         name: 'xterm-256color',
@@ -229,7 +244,9 @@ export class PtyMultiplexer {
     try {
       const cmd = this.remoteHost
         ? `ssh ${this.remoteHost} tmux has-session -t ${this.tmuxId}`
-        : `tmux has-session -t ${this.tmuxId}`;
+        : this.socketPath
+          ? `tmux -S ${this.socketPath} has-session -t ${this.tmuxId}`
+          : `tmux has-session -t ${this.tmuxId}`;
       execSync(cmd, { stdio: 'pipe' });
       return true;
     } catch {
@@ -275,7 +292,9 @@ export class PtyMultiplexer {
     try {
       const cmd = this.remoteHost
         ? `ssh ${this.remoteHost} tmux kill-session -t ${this.tmuxId}`
-        : `tmux kill-session -t ${this.tmuxId}`;
+        : this.socketPath
+          ? `tmux -S ${this.socketPath} kill-session -t ${this.tmuxId}`
+          : `tmux kill-session -t ${this.tmuxId}`;
       execSync(cmd, { stdio: 'pipe' });
       console.log(`[tmux] killed session ${this.tmuxId}`);
     } catch {}
