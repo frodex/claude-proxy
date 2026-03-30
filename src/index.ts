@@ -17,6 +17,9 @@ import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { hostname } from 'os';
+import { LinuxProvisioner } from './auth/provisioner.js';
+import { SocketManager } from './ugo/socket-manager.js';
+import { GroupWatcher } from './ugo/group-watcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,10 +35,17 @@ for (let i = 0; i < args.length; i++) {
 
 const config = loadConfig({ port: cliPort });
 
+const provisioner = new LinuxProvisioner();
+const socketManager = new SocketManager('/var/run/claude-proxy/sessions', provisioner);
+const groupWatcher = new GroupWatcher(provisioner);
+
 const sessionManager = new SessionManager({
   defaultUser: config.sessions.default_user,
   scrollbackBytes: config.sessions.scrollback_bytes,
   maxSessions: config.sessions.max_sessions,
+  socketManager,
+  groupWatcher,
+  provisioner,
 });
 
 const lobby = new Lobby({ motd: config.lobby.motd });
@@ -46,6 +56,7 @@ const dirScanner = new DirScanner({
 
 // Discover existing tmux sessions from previous proxy instance
 sessionManager.discoverSessions();
+sessionManager.startGroupWatcher();
 
 const clientState: Map<string, {
   mode: 'lobby' | 'session';
