@@ -51,15 +51,25 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 ## Pending Items
 
 [2026-03-29] TUI widget system refactor — extract duplicated picker/input/nav patterns
+[2026-03-30] Configure OAuth providers (Google, Microsoft, GitHub) with real client IDs
+[2026-03-30] Wire OAuth/provisioner into index.ts startApiServer call
+[2026-03-30] Local auth provider (Keycloak or similar) for self-hosted orgs
 [2026-03-28] svg-terminal integration (Phase B/C — client adaptation, merge, QC)
-[2026-03-28] Docker packaging with Vault companion
+[2026-03-28] Docker packaging with Vault companion (migrate SQLite → Vault Transit)
 [2026-03-28] Web onboarding wizard
-[2026-03-28] Cloudflare Access auth for web UI
 [2026-03-28] User registration + invite system
 
 ---
 
 ## Session History (most recent first)
+
+### 2026-03-30 — Auth + UGO Security Implementation (Plans A, B, C)
+- Plan A complete: UserStore (SQLite), LinuxProvisioner, resolveUser — 34 tests
+- Plan B complete: SocketManager (tmux -S sockets), GroupWatcher (inotify), PtyMultiplexer + SessionManager integration — 13 tests
+- Plan C complete: session cookies, auth middleware, OAuthManager (Google/Microsoft OIDC), GitHub adapter, auth routes in API server — 10 tests
+- 124 total tests, 21 test files, clean build
+- OAuth providers not yet configured with real credentials (pending items)
+- Artifacts: 3 implementation plans, security spec, research journal, bibliography updates
 
 ### 2026-03-29 — Working directory + remote fixes + widget system design
 - Widget system architecture approved: widgets + flow engine + renderers
