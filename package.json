@@ -16,6 +16,7 @@
     "@xterm/headless": "^6.0.0",
     "better-sqlite3-multiple-ciphers": "^12.8.0",
     "node-pty": "^1.1.0",
+    "openid-client": "^6.8.2",
     "ssh2": "^1.17.0",
     "ws": "^8.20.0",
     "yaml": "^2.8.3"
