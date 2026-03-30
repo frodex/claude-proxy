@@ -46,6 +46,7 @@ export interface Session {
   runAsUser: string;
   workingDir?: string;
   remoteHost?: string;
+  socketPath?: string;
   createdAt: Date;
   sizeOwner: string;          // client id
   clients: Map<string, Client>;

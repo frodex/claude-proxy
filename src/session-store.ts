@@ -15,6 +15,7 @@ interface StoredSession {
   runAsUser: string;
   workingDir?: string;
   remoteHost?: string;
+  socketPath?: string;
   createdAt: string;
   access: SessionAccess;
   claudeSessionId?: string;  // for resuming after tmux dies
