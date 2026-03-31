@@ -7,6 +7,7 @@ import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
 import { DirScanner } from './dir-scanner.js';
 import { setScrollRegion } from './ansi.js';
+import { wrapCursor } from './interactive-menu.js';
 import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, saveSessionMeta, loadSessionMeta, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
@@ -431,13 +432,13 @@ function handleRestartInput(client: Client, data: Buffer): void {
   }
 
   if (str === '\x1b[A' || str === '\x1bOA') {
-    flow.cursor = Math.max(0, flow.cursor - 1);
+    flow.cursor = wrapCursor(flow.cursor, totalOptions, -1);
     renderRestartPicker(client);
     return;
   }
 
   if (str === '\x1b[B' || str === '\x1bOB') {
-    flow.cursor = Math.min(totalOptions - 1, flow.cursor + 1);
+    flow.cursor = wrapCursor(flow.cursor, totalOptions, 1);
     renderRestartPicker(client);
     return;
   }
@@ -637,13 +638,13 @@ function handleExportInput(client: Client, data: Buffer): void {
   }
 
   if (str === '\x1b[A' || str === '\x1bOA') {
-    flow.cursor = Math.max(0, flow.cursor - 1);
+    flow.cursor = wrapCursor(flow.cursor, flow.sessions.length, -1);
     renderExportPicker(client);
     return;
   }
 
   if (str === '\x1b[B' || str === '\x1bOB') {
-    flow.cursor = Math.min(flow.sessions.length - 1, flow.cursor + 1);
+    flow.cursor = wrapCursor(flow.cursor, flow.sessions.length, 1);
     renderExportPicker(client);
     return;
   }
@@ -763,13 +764,13 @@ function handleCreationInput(client: Client, data: Buffer): void {
 
       // Arrow up
       if (str === '\x1b[A' || str === '\x1bOA') {
-        flow.workdirCursor = Math.max(0, flow.workdirCursor - 1);
+        flow.workdirCursor = wrapCursor(flow.workdirCursor, items.length, -1);
         renderWorkdirPrompt(client, flow);
         return;
       }
       // Arrow down
       if (str === '\x1b[B' || str === '\x1bOB') {
-        flow.workdirCursor = Math.min(items.length - 1, flow.workdirCursor + 1);
+        flow.workdirCursor = wrapCursor(flow.workdirCursor, items.length, 1);
         renderWorkdirPrompt(client, flow);
         return;
       }
@@ -880,12 +881,12 @@ function handleCreationInput(client: Client, data: Buffer): void {
     const totalOptions = remotes.length + 1; // +1 for local
 
     if (str === '\x1b[A' || str === '\x1bOA') {
-      flow.serverCursor = Math.max(0, (flow.serverCursor ?? 0) - 1);
+      flow.serverCursor = wrapCursor(flow.serverCursor ?? 0, totalOptions, -1);
       renderServerPicker(client, flow);
       return;
     }
     if (str === '\x1b[B' || str === '\x1bOB') {
-      flow.serverCursor = Math.min(totalOptions - 1, (flow.serverCursor ?? 0) + 1);
+      flow.serverCursor = wrapCursor(flow.serverCursor ?? 0, totalOptions, 1);
       renderServerPicker(client, flow);
       return;
     }
@@ -977,13 +978,13 @@ function handleCreationInput(client: Client, data: Buffer): void {
   if (flow.step === 'users') {
     // Arrow up
     if (str === '\x1b[A' || str === '\x1bOA') {
-      flow.userCursor = Math.max(0, flow.userCursor - 1);
+      flow.userCursor = wrapCursor(flow.userCursor, flow.availableUsers.length, -1);
       renderUserPicker(flow, client);
       return;
     }
     // Arrow down
     if (str === '\x1b[B' || str === '\x1bOB') {
-      flow.userCursor = Math.min(flow.availableUsers.length - 1, flow.userCursor + 1);
+      flow.userCursor = wrapCursor(flow.userCursor, flow.availableUsers.length, 1);
       renderUserPicker(flow, client);
       return;
     }
@@ -1022,12 +1023,12 @@ function handleCreationInput(client: Client, data: Buffer): void {
 
   if (flow.step === 'groups') {
     if (str === '\x1b[A' || str === '\x1bOA') {
-      flow.groupCursor = Math.max(0, flow.groupCursor - 1);
+      flow.groupCursor = wrapCursor(flow.groupCursor, flow.availableGroups.length, -1);
       renderGroupPicker(flow, client);
       return;
     }
     if (str === '\x1b[B' || str === '\x1bOB') {
-      flow.groupCursor = Math.min(flow.availableGroups.length - 1, flow.groupCursor + 1);
+      flow.groupCursor = wrapCursor(flow.groupCursor, flow.availableGroups.length, 1);
       renderGroupPicker(flow, client);
       return;
     }

@@ -5,7 +5,7 @@ import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
-import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
+import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, wrapCursor, type MenuSection, type MenuItem } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames } from './session-store.js';
 import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups } from './user-utils.js';
@@ -408,12 +408,12 @@ export class SessionManager {
 
         if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
         if (str === '\x1b[A' || str === '\x1bOA') {
-          edit.pickerCursor = Math.max(0, edit.pickerCursor - 1);
+          edit.pickerCursor = wrapCursor(edit.pickerCursor, totalItems, -1);
           this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
         if (str === '\x1b[B' || str === '\x1bOB') {
-          edit.pickerCursor = Math.min(totalItems - 1, edit.pickerCursor + 1);
+          edit.pickerCursor = wrapCursor(edit.pickerCursor, totalItems, 1);
           this.renderCheckboxPicker(client, 'Allowed users', 'empty = everyone can join', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
@@ -458,12 +458,12 @@ export class SessionManager {
 
         if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
         if (str === '\x1b[A' || str === '\x1bOA') {
-          edit.pickerCursor = Math.max(0, edit.pickerCursor - 1);
+          edit.pickerCursor = wrapCursor(edit.pickerCursor, totalItems, -1);
           this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
         if (str === '\x1b[B' || str === '\x1bOB') {
-          edit.pickerCursor = Math.min(totalItems - 1, edit.pickerCursor + 1);
+          edit.pickerCursor = wrapCursor(edit.pickerCursor, totalItems, 1);
           this.renderCheckboxPicker(client, 'Allowed groups', 'cp- prefix added automatically', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
@@ -509,12 +509,12 @@ export class SessionManager {
         if (str === '\x1b' && data.length === 1) { edit.step = 'menu'; this.renderEditMenu(sessionId, client); return; }
 
         if (str === '\x1b[A' || str === '\x1bOA') {
-          edit.pickerCursor = Math.max(0, edit.pickerCursor - 1);
+          edit.pickerCursor = wrapCursor(edit.pickerCursor, totalItems, -1);
           this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
         if (str === '\x1b[B' || str === '\x1bOB') {
-          edit.pickerCursor = Math.min(totalItems - 1, edit.pickerCursor + 1);
+          edit.pickerCursor = wrapCursor(edit.pickerCursor, totalItems, 1);
           this.renderCheckboxPicker(client, 'Session admins', 'users in cp-admins group are always admins', edit.pickerItems, selected, edit.pickerCursor, edit.buffer || '');
           return;
         }
