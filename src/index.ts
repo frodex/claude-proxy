@@ -8,7 +8,7 @@ import { Lobby } from './lobby.js';
 import { DirScanner } from './dir-scanner.js';
 import { setScrollRegion } from './ansi.js';
 import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, isUserInGroup } from './user-utils.js';
-import { listDeadSessions, type StoredSession } from './session-store.js';
+import { listDeadSessions, saveSessionMeta, loadSessionMeta, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
 import { color } from './ansi.js';
 import { createHash } from 'crypto';
@@ -96,6 +96,8 @@ function hashPassword(pw: string): string {
 const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
 
 const restartFlow: Map<string, { deadSessions: StoredSession[]; cursor: number }> = new Map();
+
+const resumeIdFlow: Map<string, { dead: StoredSession; buffer: string }> = new Map();
 
 const exportFlow: Map<string, { sessions: ExportableSession[]; selected: Set<number>; cursor: number }> = new Map();
 
@@ -428,13 +430,13 @@ function handleRestartInput(client: Client, data: Buffer): void {
     return;
   }
 
-  if (str === '\x1b[A') {
+  if (str === '\x1b[A' || str === '\x1bOA') {
     flow.cursor = Math.max(0, flow.cursor - 1);
     renderRestartPicker(client);
     return;
   }
 
-  if (str === '\x1b[B') {
+  if (str === '\x1b[B' || str === '\x1bOB') {
     flow.cursor = Math.min(totalOptions - 1, flow.cursor + 1);
     renderRestartPicker(client);
     return;
@@ -455,13 +457,66 @@ function handleRestartInput(client: Client, data: Buffer): void {
       return;
     }
 
-    // Restart a dead session with its original settings
+    // Prompt for Claude session ID before restarting
     const dead = flow.deadSessions[flow.cursor];
     restartFlow.delete(client.id);
+    resumeIdFlow.set(client.id, { dead, buffer: dead.claudeSessionId || '' });
+    renderResumeIdPrompt(client);
+    return;
+  }
+}
+
+function renderResumeIdPrompt(client: Client): void {
+  const flow = resumeIdFlow.get(client.id);
+  if (!flow) return;
+  client.write('\x1b[2J\x1b[H');
+  client.write(`\x1b[1mRestarting: ${flow.dead.name}\x1b[0m\r\n\r\n`);
+  client.write(`  Claude session ID to resume\r\n`);
+  client.write(`  \x1b[90m(paste ID for exact resume, or leave blank for picker)\x1b[0m\r\n\r\n`);
+  client.write(`  > ${flow.buffer}\x1b[K`);
+}
+
+function handleResumeIdInput(client: Client, data: Buffer): void {
+  const flow = resumeIdFlow.get(client.id);
+  if (!flow) return;
+  const str = data.toString();
+
+  // Esc — cancel back to lobby
+  if (str === '\x1b' && data.length === 1) {
+    resumeIdFlow.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  // Backspace
+  if (str === '\x7f' || str === '\b') {
+    if (flow.buffer.length > 0) {
+      flow.buffer = flow.buffer.slice(0, -1);
+      client.write('\b \b');
+    }
+    return;
+  }
+
+  // Enter — launch with whatever ID is in the buffer
+  if (str === '\r' || str === '\n') {
+    const sessionId = flow.buffer.trim();
+    const dead = flow.dead;
+    resumeIdFlow.delete(client.id);
+
+    // Save the session ID to metadata for future restarts
+    if (sessionId) {
+      try {
+        const meta = loadSessionMeta(dead.tmuxId);
+        if (meta) {
+          meta.claudeSessionId = sessionId;
+          saveSessionMeta(dead.tmuxId, meta);
+        }
+      } catch {}
+    }
 
     try {
-      console.log(`[restart] ${client.username} restarting "${dead.name}" with original settings`);
-      const resumeArgs = dead.claudeSessionId ? ['--resume', dead.claudeSessionId] : ['--resume'];
+      const resumeArgs = sessionId ? ['--resume', sessionId] : ['--resume'];
+      console.log(`[restart] ${client.username} restarting "${dead.name}" with resume ${sessionId || '(picker)'}`);
       const session = sessionManager.createSession(
         dead.name,
         client,
@@ -487,6 +542,18 @@ function handleRestartInput(client: Client, data: Buffer): void {
       setTimeout(() => showLobby(client), 2000);
     }
     return;
+  }
+
+  // Printable character — add to buffer
+  if (str.length === 1 && str.charCodeAt(0) >= 32) {
+    flow.buffer += str;
+    client.write(str);
+  }
+
+  // Handle paste (multiple chars at once)
+  if (str.length > 1 && !str.startsWith('\x1b')) {
+    flow.buffer += str;
+    client.write(str);
   }
 }
 
@@ -909,13 +976,13 @@ function handleCreationInput(client: Client, data: Buffer): void {
 
   if (flow.step === 'users') {
     // Arrow up
-    if (str === '\x1b[A') {
+    if (str === '\x1b[A' || str === '\x1bOA') {
       flow.userCursor = Math.max(0, flow.userCursor - 1);
       renderUserPicker(flow, client);
       return;
     }
     // Arrow down
-    if (str === '\x1b[B') {
+    if (str === '\x1b[B' || str === '\x1bOB') {
       flow.userCursor = Math.min(flow.availableUsers.length - 1, flow.userCursor + 1);
       renderUserPicker(flow, client);
       return;
@@ -954,12 +1021,12 @@ function handleCreationInput(client: Client, data: Buffer): void {
   }
 
   if (flow.step === 'groups') {
-    if (str === '\x1b[A') {
+    if (str === '\x1b[A' || str === '\x1bOA') {
       flow.groupCursor = Math.max(0, flow.groupCursor - 1);
       renderGroupPicker(flow, client);
       return;
     }
-    if (str === '\x1b[B') {
+    if (str === '\x1b[B' || str === '\x1bOB') {
       flow.groupCursor = Math.min(flow.availableGroups.length - 1, flow.groupCursor + 1);
       renderGroupPicker(flow, client);
       return;
@@ -1054,6 +1121,11 @@ transport.onConnect((client) => {
 
     if (restartFlow.has(client.id)) {
       handleRestartInput(client, data);
+      return;
+    }
+
+    if (resumeIdFlow.has(client.id)) {
+      handleResumeIdInput(client, data);
       return;
     }
 
