@@ -82,12 +82,12 @@ export class FlowEngine {
 
   private handleNavigateKey(key: KeyEvent): FlowEvent {
     if (key.key === 'Up') {
-      const prev = this.findNextVisible(this.currentIndex, -1);
+      const prev = this.findNextVisible(this.currentIndex, -1, false);  // don't skip locked
       if (prev !== this.currentIndex) this.currentIndex = prev;
       return { type: 'none' };
     }
     if (key.key === 'Down') {
-      const next = this.findNextVisible(this.currentIndex, 1);
+      const next = this.findNextVisible(this.currentIndex, 1, false);  // don't skip locked
       if (next !== this.currentIndex) this.currentIndex = next;
       return { type: 'none' };
     }
@@ -141,23 +141,25 @@ export class FlowEngine {
     return { type: 'widget-event', event };
   }
 
-  private findNextVisible(from: number, direction: 1 | -1): number {
+  private findNextVisible(from: number, direction: 1 | -1, skipLocked: boolean = true): number {
     let i = from + direction;
     while (i >= 0 && i < this.steps.length) {
       const step = this.steps[i];
-      // Skip grayed (condition false) and locked fields
+      // Always skip grayed (condition false)
       if (step.condition && !step.condition(this.accumulated)) {
         i += direction;
         continue;
       }
-      // Skip locked fields — display only, not interactive
-      try {
-        const widget = step.createWidget(this.accumulated);
-        if (widget.state?.locked) {
-          i += direction;
-          continue;
-        }
-      } catch {}
+      // Optionally skip locked fields
+      if (skipLocked) {
+        try {
+          const widget = step.createWidget(this.accumulated);
+          if (widget.state?.locked) {
+            i += direction;
+            continue;
+          }
+        } catch {}
+      }
       return i;
     }
     return from; // no valid step found, stay put
