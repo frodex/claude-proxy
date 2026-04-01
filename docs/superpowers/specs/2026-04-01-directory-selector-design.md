@@ -192,9 +192,78 @@ This is option 5 from the design questions (data service) applied to the integra
 | No test exists | Directory permission filtering |
 | No test exists | Remote directory completion |
 
+## Fork to Different Directory — Special Case
+
+Changing the working directory on a fork is NOT trivial. It requires Claude session file manipulation.
+
+**Reference:** `/srv/PHAT-TOAD-with-Trails/how-to-fork-claude.md` (verified 2026-04-01)
+
+### Why it's complex
+
+Claude Code stores sessions at `~/.claude/projects/{encoded-cwd}/{session-id}.jsonl`. The `{encoded-cwd}` is the launch directory with `/` replaced by `-` (e.g. `/srv/svg-terminal` → `-srv-svg-terminal`). Every record in the JSONL has a `cwd` field. The loader checks `cwd` against the current working directory — **if they don't match, the agent starts fresh with no memory.**
+
+So `claude --resume <id> --fork-session` only works from the SAME directory the session was created in. From a different directory, the session is not found.
+
+### What forking to a different directory requires
+
+1. **Copy** the JSONL and companion directory from source encoded-cwd to target encoded-cwd
+2. **Rewrite** the `cwd` field in every record in the JSONL to the new directory
+3. **Launch** from the new directory with `claude --resume <id>`
+
+This is automated by: `/srv/PHAT-TOAD-with-Trails/inspector/tools/fork-agent-to-project.sh`
+
+### Alert screen when user changes workdir on fork
+
+If the user changes the working directory field during fork (different from source session), the form MUST show an alert before proceeding:
+
+```
+⚠ DIRECTORY CHANGE DETECTED
+
+You are forking this session into a different directory
+than the original session.
+
+  Source: /root
+  Target: /srv/new-project
+
+This will:
+  1. Copy Claude session files from:
+     ~/.claude/projects/-root/<session-id>.jsonl
+     → ~/.claude/projects/-srv-new-project/<session-id>.jsonl
+
+  2. Rewrite working directory in all session records
+
+  3. Copy companion files (subagents, tool results)
+
+The original session is unchanged.
+
+  [Enter] Proceed with directory change
+  [Esc]   Go back and edit
+  [q]     Cancel fork entirely
+```
+
+### Implementation requirements
+
+The fork flow in `session-manager.ts` must:
+
+1. Detect if `workingDir` changed from source session
+2. If changed, show the alert screen
+3. On approval:
+   - Run `fork-agent-to-project.sh` (or equivalent logic) to copy + rewrite
+   - Then launch tmux in the new directory with `claude --resume <new-id>`
+4. If NOT changed:
+   - Normal fork: `claude --resume <id> --fork-session` from the same directory
+
+### Anti-patterns from the how-to guide
+
+- **Don't run fork and original simultaneously** — they share a session ID, histories diverge
+- **Always copy the companion directory** (`{session-id}/`) — contains subagent data
+- **Fork BEFORE compaction** — compacted sessions only carry the summary, not full history
+- **Don't assume `--fork-session` works cross-directory** — it doesn't
+
 ## Next Steps
 
 - Decide on the security model (run-as-user vs filter)
 - Decide on data service vs widget approach (option 4 above is the recommendation)
-- Write the spec
+- Implement the fork-to-different-directory alert and file manipulation
+- Write the spec for DirectorySelector service
 - Implement incrementally

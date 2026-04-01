@@ -41,7 +41,7 @@ fields:
       create:  { visible: true, locked: false }
       edit:    { visible: true, locked: true, prefill: true }
       restart: { visible: true, locked: true, prefill: true }
-      fork:    { visible: true, locked: true, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
 
   - id: hidden
     label: Hidden session?
