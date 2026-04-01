@@ -33,3 +33,16 @@ export function isCancelKey(key: KeyEvent, allowQ: boolean = true): boolean {
   if (allowQ && key.key === 'q') return true;
   return false;
 }
+
+export type WidgetFieldState = 'active' | 'editing' | 'completed' | 'locked' | 'grayed' | 'pending';
+
+export const STATE_COLORS: Record<WidgetFieldState, string> = {
+  active: '\x1b[33m',              // yellow — field nav cursor
+  editing: '\x1b[1m',              // bold white — widget edit mode
+  completed: '\x1b[32m',          // green
+  locked: '\x1b[33;2m',           // yellow dim
+  grayed: '\x1b[38;5;245m',       // dark gray
+  pending: '\x1b[2m',             // dim white
+};
+
+export const RESET = '\x1b[0m';
