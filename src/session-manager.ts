@@ -7,7 +7,7 @@ import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
-import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames } from './session-store.js';
+import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames, discoverClaudeSessionId } from './session-store.js';
 import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups } from './user-utils.js';
 import { parseKey } from './widgets/keys.js';
 import { CheckboxPicker } from './widgets/checkbox-picker.js';
@@ -294,7 +294,38 @@ export class SessionManager {
     this.sessions.set(tmuxId, session);
     this.joinSession(tmuxId, creator);
 
+    // Backfill Claude session ID after Claude has time to start
+    this.scheduleClaudeIdBackfill(tmuxId, socketPath, user);
+
     return session;
+  }
+
+  private scheduleClaudeIdBackfill(tmuxId: string, socketPath?: string, runAsUser?: string): void {
+    // Poll a few times with increasing delay — Claude takes a moment to write its session file
+    const delays = [3000, 5000, 10000];
+    for (const delay of delays) {
+      setTimeout(() => {
+        const session = this.sessions.get(tmuxId);
+        if (!session) return;  // session already gone
+
+        const meta = loadSessionMeta(tmuxId);
+        if (meta?.claudeSessionId) return;  // already have it
+
+        const discoveredId = discoverClaudeSessionId(tmuxId, socketPath, runAsUser);
+        if (!discoveredId) return;
+
+        // Store it — rotate old ID to pastClaudeSessionIds if different
+        if (meta) {
+          if (meta.claudeSessionId && meta.claudeSessionId !== discoveredId) {
+            if (!meta.pastClaudeSessionIds) meta.pastClaudeSessionIds = [];
+            meta.pastClaudeSessionIds.push(meta.claudeSessionId);
+          }
+          meta.claudeSessionId = discoveredId;
+          saveSessionMeta(tmuxId, meta);
+          console.log(`[backfill] discovered Claude session ID for "${session.name}": ${discoveredId}`);
+        }
+      }, delay);
+    }
   }
 
   joinSession(sessionId: string, client: Client): void {
@@ -742,6 +773,7 @@ export class SessionManager {
         { label: 'Scrollback dump', key: 'l', hint: 'Ctrl-B l — use terminal scrollbar', action: 'scrolldump' },
         { label: 'Scrollback viewer', key: 'b', hint: 'Ctrl-B b — arrows/pgup/pgdn', action: 'scrollview' },
         { label: 'Edit session settings', key: 'e', hint: 'Ctrl-B e — owner only', action: 'editSession' },
+        { label: 'Fork session', key: 'f', hint: 'Ctrl-B f — branch conversation', action: 'forkSession' },
       ],
     },
     {
@@ -803,6 +835,84 @@ export class SessionManager {
       case 'editSession':
         this.startEditSession(sessionId, client);
         break;
+      case 'forkSession':
+        this.forkSession(sessionId, client);
+        break;
+    }
+  }
+
+  private forkSession(sessionId: string, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    // Try to get the Claude session ID
+    const meta = loadSessionMeta(sessionId);
+    let claudeId = meta?.claudeSessionId;
+
+    // If not stored, try to discover it now
+    if (!claudeId) {
+      claudeId = discoverClaudeSessionId(sessionId, session.socketPath, session.runAsUser) ?? undefined;
+      if (claudeId && meta) {
+        meta.claudeSessionId = claudeId;
+        saveSessionMeta(sessionId, meta);
+      }
+    }
+
+    if (!claudeId) {
+      client.write('\x1b[2J\x1b[H');
+      client.write('\r\n  \x1b[31mCannot fork: no Claude session ID found for this session.\x1b[0m\r\n');
+      client.write('  \x1b[90mThe session ID is discovered automatically after Claude starts.\x1b[0m\r\n');
+      client.write('  \x1b[90mTry again in a few seconds, or use Ctrl-B e to enter one manually.\x1b[0m\r\n\r\n');
+      client.write('  Press any key to return...');
+      // Return to session on next keypress
+      session.pty.attach(client);
+      return;
+    }
+
+    // Generate fork name
+    const baseName = session.name;
+    let forkNum = 1;
+    while (this.sessions.has(`cp-${baseName}-fork_${String(forkNum).padStart(2, '0')}`.replace(/[^a-zA-Z0-9_-]/g, '_'))) {
+      forkNum++;
+    }
+    const forkName = `${baseName}-fork_${String(forkNum).padStart(2, '0')}`;
+
+    client.write('\x1b[2J\x1b[H');
+    client.write(`\r\n  \x1b[1mForking session:\x1b[0m ${session.name}\r\n`);
+    client.write(`  \x1b[90mClaude session: ${claudeId}\x1b[0m\r\n`);
+    client.write(`  \x1b[90mNew session: ${forkName}\x1b[0m\r\n\r\n`);
+    client.write('  Creating fork...\r\n');
+
+    try {
+      // Leave current session
+      this.leaveSession(sessionId, client);
+
+      // Create new session with --resume <id> --fork-session
+      const forkedSession = this.createSession(
+        forkName,
+        client,
+        session.runAsUser,
+        'claude',
+        session.access,
+        ['--resume', claudeId, '--fork-session'],
+        undefined,
+        session.workingDir,
+      );
+
+      // Store the source session ID in the fork's metadata
+      const forkMeta = loadSessionMeta(forkedSession.id);
+      if (forkMeta) {
+        forkMeta.pastClaudeSessionIds = [claudeId];
+        saveSessionMeta(forkedSession.id, forkMeta);
+      }
+
+      session.onClientDetach?.(client);
+
+      console.log(`[fork] ${client.username} forked "${session.name}" (${claudeId}) → "${forkName}"`);
+    } catch (err: any) {
+      client.write(`\r\n  \x1b[31mFork failed: ${err.message}\x1b[0m\r\n`);
+      client.write('  Press any key to return...\r\n');
+      session.pty.attach(client);
     }
   }
 
