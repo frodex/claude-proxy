@@ -73,3 +73,12 @@ test('change event emitted on typing', () => {
   const event = ti.handleKey(parseKey(Buffer.from('a')));
   expect(event).toEqual({ type: 'change', buffer: 'a' });
 });
+
+test('locked input ignores typing and backspace', () => {
+  const ti = new TextInput({ prompt: 'ID', locked: true, initial: 'abc-123' });
+  expect(ti.handleKey(parseKey(Buffer.from('x'))).type).toBe('none');
+  expect(ti.state.buffer).toBe('abc-123');
+  expect(ti.handleKey(parseKey(Buffer.from('\x7f'))).type).toBe('none'); // Backspace
+  expect(ti.state.buffer).toBe('abc-123');
+  expect(ti.handleKey(parseKey(Buffer.from('\x1b'))).type).toBe('cancel'); // Escape works
+});

@@ -10,6 +10,7 @@ export interface ListPickerState {
   cursor: number;
   title?: string;
   hint?: string;
+  locked?: boolean;
 }
 
 export type ListPickerEvent =
@@ -21,16 +22,22 @@ export type ListPickerEvent =
 export class ListPicker {
   state: ListPickerState;
 
-  constructor(options: { items: ListPickerItem[]; title?: string; hint?: string }) {
+  constructor(options: { items: ListPickerItem[]; title?: string; hint?: string; locked?: boolean }) {
     this.state = {
       items: options.items,
       cursor: 0,
       title: options.title,
       hint: options.hint,
+      locked: options.locked,
     };
   }
 
   handleKey(key: KeyEvent): ListPickerEvent {
+    if (this.state.locked) {
+      if (isCancelKey(key)) return { type: 'cancel' };
+      return { type: 'none' };
+    }
+
     const total = this.state.items.length;
     if (total === 0) return { type: 'none' };
 

@@ -4,6 +4,7 @@ export interface TextInputState {
   buffer: string;
   prompt?: string;
   masked?: boolean;
+  locked?: boolean;
 }
 
 export type TextInputEvent =
@@ -16,15 +17,21 @@ export type TextInputEvent =
 export class TextInput {
   state: TextInputState;
 
-  constructor(options: { prompt?: string; masked?: boolean; initial?: string }) {
+  constructor(options: { prompt?: string; masked?: boolean; initial?: string; locked?: boolean }) {
     this.state = {
       buffer: options.initial ?? '',
       prompt: options.prompt,
       masked: options.masked,
+      locked: options.locked,
     };
   }
 
   handleKey(key: KeyEvent): TextInputEvent {
+    if (this.state.locked) {
+      if (key.key === 'Escape' || key.key === 'CtrlC') return { type: 'cancel' };
+      return { type: 'none' };
+    }
+
     if (key.key === 'Enter') {
       return { type: 'submit', value: this.state.buffer };
     }

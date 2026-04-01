@@ -74,3 +74,12 @@ test('unrecognized key returns none', () => {
   const event = lp.handleKey(parseKey(Buffer.from('x')));
   expect(event).toEqual({ type: 'none' });
 });
+
+test('locked picker ignores all input except cancel', () => {
+  const lp = new ListPicker({ items: [{ label: 'A' }, { label: 'B' }], locked: true });
+  expect(lp.handleKey(parseKey(Buffer.from('\x1b[B'))).type).toBe('none'); // Down
+  expect(lp.handleKey(parseKey(Buffer.from('\x1b[A'))).type).toBe('none'); // Up
+  expect(lp.handleKey(parseKey(Buffer.from('\r'))).type).toBe('none');     // Enter
+  expect(lp.handleKey(parseKey(Buffer.from(' '))).type).toBe('none');      // Space
+  expect(lp.handleKey(parseKey(Buffer.from('\x1b'))).type).toBe('cancel'); // Escape still works
+});

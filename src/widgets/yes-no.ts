@@ -4,6 +4,7 @@ import type { KeyEvent } from './keys.js';
 export interface YesNoState {
   prompt: string;
   defaultValue: boolean;
+  locked?: boolean;
 }
 
 export type YesNoEvent =
@@ -14,14 +15,20 @@ export type YesNoEvent =
 export class YesNoPrompt {
   state: YesNoState;
 
-  constructor(options: { prompt: string; defaultValue: boolean }) {
+  constructor(options: { prompt: string; defaultValue: boolean; locked?: boolean }) {
     this.state = {
       prompt: options.prompt,
       defaultValue: options.defaultValue,
+      locked: options.locked,
     };
   }
 
   handleKey(key: KeyEvent): YesNoEvent {
+    if (this.state.locked) {
+      if (key.key === 'Escape' || key.key === 'CtrlC') return { type: 'cancel' };
+      return { type: 'none' };
+    }
+
     if (key.key === 'y' || key.key === 'Y') {
       return { type: 'answer', value: true };
     }
