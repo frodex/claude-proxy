@@ -25,6 +25,7 @@ interface SessionManagerOptions {
   socketManager?: SocketManager;
   groupWatcher?: GroupWatcher;
   provisioner?: Provisioner;
+  getDirItems?: (acc: Record<string, any>) => Array<{ label: string }>;
 }
 
 interface ManagedSession extends Session {
@@ -40,7 +41,7 @@ interface ManagedSession extends Session {
 export class SessionManager {
   private sessions: Map<string, ManagedSession> = new Map();
   private editFlows = new Map<string, { flow: FlowEngine; sessionId: string }>();
-  private forkFlows = new Map<string, { flow: FlowEngine; sourceSessionId: string; claudeId: string; notice?: boolean; forkResults?: Record<string, any> }>();
+  private forkFlows = new Map<string, { flow: FlowEngine; sourceSessionId: string; claudeId: string; notice?: string; forkResults?: Record<string, any> }>();
   private options: SessionManagerOptions;
   private onSessionEndCallback?: (sessionId: string) => void;
   private socketManager?: SocketManager;
@@ -677,6 +678,26 @@ export class SessionManager {
     client.write(renderFlowForm('Fork session', summary, state.widget, state.stepId, missing.length > 0 ? missing : undefined));
   }
 
+  private showForkDirChangeAlert(client: Client, sourceName: string, forkName: string, sourceDir: string, targetDir: string, claudeId: string): void {
+    const sourceEncoded = sourceDir.replace(/\//g, '-') || '-root';
+    const targetEncoded = targetDir.replace(/\//g, '-') || '-root';
+    const parts: string[] = ['\x1b[2J\x1b[H'];
+    parts.push(`  \x1b[33m⚠ DIRECTORY CHANGE DETECTED\x1b[0m\r\n\r\n`);
+    parts.push(`  You are forking this session into a different directory\r\n`);
+    parts.push(`  than the original session.\r\n\r\n`);
+    parts.push(`    Source: \x1b[1m${sourceDir}\x1b[0m\r\n`);
+    parts.push(`    Target: \x1b[1m${targetDir}\x1b[0m\r\n\r\n`);
+    parts.push(`  This will:\r\n`);
+    parts.push(`    1. Copy Claude session files:\r\n`);
+    parts.push(`       \x1b[38;5;245m~/.claude/projects/${sourceEncoded}/${claudeId}.jsonl\x1b[0m\r\n`);
+    parts.push(`       \x1b[38;5;245m→ ~/.claude/projects/${targetEncoded}/${claudeId}.jsonl\x1b[0m\r\n\r\n`);
+    parts.push(`    2. Rewrite working directory in all session records\r\n\r\n`);
+    parts.push(`    3. Copy companion files (subagents, tool results)\r\n\r\n`);
+    parts.push(`  The original session is unchanged.\r\n\r\n`);
+    parts.push(`  \x1b[32m[Enter]\x1b[0m Proceed    \x1b[33m[Esc]\x1b[0m Go back    \x1b[31m[q]\x1b[0m Cancel fork\r\n`);
+    client.write(parts.join(''));
+  }
+
   private showForkNotice(client: Client, sourceName: string, forkName: string): void {
     const parts: string[] = ['\x1b[2J\x1b[H'];
     parts.push(`  \x1b[1mFork session\x1b[0m\r\n`);
@@ -699,12 +720,42 @@ export class SessionManager {
     if (!session) return;
 
     if (entry.notice) {
-      // On notice screen — Enter creates fork, Escape cancels
       const str = data.toString();
+      if (entry.notice === 'dirchange') {
+        // Directory change alert — Enter=proceed, Escape=go back to form, q=cancel entirely
+        if (str === '\r' || str === '\n') {
+          // Proceed — but the actual cross-directory fork is NOT IMPLEMENTED yet
+          // For now, show a message that this feature is coming soon
+          client.write('\x1b[2J\x1b[H');
+          client.write('\r\n  \x1b[33mCross-directory fork is not yet implemented.\x1b[0m\r\n\r\n');
+          client.write('  The session file copy and CWD rewrite logic is documented in:\r\n');
+          client.write('  \x1b[36m/srv/PHAT-TOAD-with-Trails/how-to-fork-claude.md\x1b[0m\r\n\r\n');
+          client.write('  Press any key to return to session...\r\n');
+          entry.notice = 'waitkey';
+        } else if (str === '\x1b' && data.length === 1 || str === '\x03') {
+          // Go back to form
+          entry.notice = undefined as any;
+          this.renderForkForm(client);
+        } else if (str === 'q' || str === 'Q') {
+          // Cancel entirely
+          this.forkFlows.delete(client.id);
+          client.write('\x1b[2J\x1b[H');
+          session.pty.attach(client);
+        }
+        return;
+      }
+      if (entry.notice === 'waitkey') {
+        // Any key returns to session
+        this.forkFlows.delete(client.id);
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+        return;
+      }
+      // Normal confirm notice — Enter creates fork, Escape cancels
       if (str === '\r' || str === '\n') {
         this.forkFlows.delete(client.id);
         this.executeFork(sessionId, client, entry.forkResults!, entry.claudeId);
-      } else if (str === '\x1b' && data.length === 1) {
+      } else if (str === '\x1b' && data.length === 1 || str === '\x03' || str === 'q') {
         this.forkFlows.delete(client.id);
         client.write('\x1b[2J\x1b[H');
         session.pty.attach(client);
@@ -718,9 +769,18 @@ export class SessionManager {
 
     if (event.type === 'flow-complete') {
       entry.forkResults = event.results;
-      entry.notice = true;
       const forkName = event.results.name || 'unnamed-fork';
-      this.showForkNotice(client, session.name, forkName);
+      const sourceWorkdir = session.workingDir || '~';
+      const targetWorkdir = event.results.workingDir || '~';
+      const workdirChanged = sourceWorkdir !== targetWorkdir;
+
+      if (workdirChanged) {
+        entry.notice = 'dirchange';
+        this.showForkDirChangeAlert(client, session.name, forkName, sourceWorkdir, targetWorkdir, entry.claudeId);
+      } else {
+        entry.notice = 'confirm';
+        this.showForkNotice(client, session.name, forkName);
+      }
     } else if (event.type === 'flow-cancelled') {
       this.forkFlows.delete(client.id);
       client.write('\x1b[2J\x1b[H');
