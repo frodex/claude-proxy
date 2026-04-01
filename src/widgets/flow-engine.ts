@@ -1,4 +1,4 @@
-import type { KeyEvent } from './keys.js';
+import type { KeyEvent, WidgetFieldState } from './keys.js';
 
 type Widget = { handleKey(key: KeyEvent): any; state: any };
 
@@ -8,6 +8,15 @@ export interface FlowStep {
   createWidget: (accumulated: Record<string, any>) => Widget;
   condition?: (accumulated: Record<string, any>) => boolean;
   onResult: (event: any, accumulated: Record<string, any>) => void;
+  displayValue?: (accumulated: Record<string, any>) => string;
+  required?: boolean;
+}
+
+export interface FlowStepSummary {
+  id: string;
+  label: string;
+  fieldState: WidgetFieldState;
+  value?: string;
 }
 
 export type FlowEvent =
@@ -76,6 +85,33 @@ export class FlowEngine {
 
   getResults(): Record<string, any> {
     return this.accumulated;
+  }
+
+  getFlowSummary(): FlowStepSummary[] {
+    return this.steps.map((step, i) => {
+      if (i < this.currentIndex) {
+        const value = step.displayValue
+          ? step.displayValue(this.accumulated)
+          : this.defaultDisplayValue(step.id);
+        return { id: step.id, label: step.label, fieldState: 'completed' as const, value };
+      }
+      if (i === this.currentIndex) {
+        return { id: step.id, label: step.label, fieldState: 'active' as const };
+      }
+      if (step.condition && !step.condition(this.accumulated)) {
+        return { id: step.id, label: step.label, fieldState: 'grayed' as const };
+      }
+      return { id: step.id, label: step.label, fieldState: 'pending' as const };
+    });
+  }
+
+  private defaultDisplayValue(stepId: string): string {
+    const val = this.accumulated[stepId];
+    if (val === undefined || val === null) return '';
+    if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+    if (typeof val === 'string') return val || '(default)';
+    if (Array.isArray(val)) return val.length > 0 ? val.join(', ') : '(none)';
+    return String(val);
   }
 
   private advanceToNext(): void {

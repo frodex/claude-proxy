@@ -104,6 +104,65 @@ test('accumulated results available to conditions', () => {
   expect(engine.getResults().details).toBeUndefined();
 });
 
+test('getFlowSummary uses displayValue callback for completed steps', () => {
+  const flow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Session name',
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+      displayValue: (acc) => acc.name || '',
+    },
+    {
+      id: 'hidden',
+      label: 'Hidden?',
+      createWidget: () => new YesNoPrompt({ prompt: 'Hidden?', defaultValue: false }),
+      onResult: (e, acc) => { acc.hidden = e.value; },
+      displayValue: (acc) => acc.hidden ? 'Yes' : 'No',
+    },
+  ];
+
+  const engine = new FlowEngine(flow);
+  engine.handleKey(parseKey(Buffer.from('my-project')));
+  engine.handleKey(parseKey(Buffer.from('\r'))); // submit name
+
+  const summary = engine.getFlowSummary();
+  expect(summary[0].fieldState).toBe('completed');
+  expect(summary[0].value).toBe('my-project');
+  expect(summary[1].fieldState).toBe('active');
+  expect(summary[1].value).toBeUndefined();
+});
+
+test('getFlowSummary marks skipped conditional steps as grayed', () => {
+  const flow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Name',
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+    {
+      id: 'admin-only',
+      label: 'Admin setting',
+      createWidget: () => new YesNoPrompt({ prompt: 'Admin?', defaultValue: false }),
+      condition: () => false,
+      onResult: (e, acc) => { acc.admin = e.value; },
+    },
+    {
+      id: 'final',
+      label: 'Done',
+      createWidget: () => new YesNoPrompt({ prompt: 'Done?', defaultValue: true }),
+      onResult: (e, acc) => { acc.done = e.value; },
+    },
+  ];
+
+  const engine = new FlowEngine(flow);
+  const summary = engine.getFlowSummary();
+  expect(summary[0].fieldState).toBe('active');
+  expect(summary[1].fieldState).toBe('grayed');
+  expect(summary[2].fieldState).toBe('pending');
+});
+
 test('isComplete returns true after all steps', () => {
   const flow = new FlowEngine(twoStepFlow);
   expect(flow.isComplete()).toBe(false);
