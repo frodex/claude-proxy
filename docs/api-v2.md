@@ -100,3 +100,127 @@ Require `cp-admins` group membership.
 | `/api/admin/users/:id` | PATCH | Update user (groups, admin status, disable) |
 | `/api/admin/users/:id/provision` | POST | Manually provision a Linux account for an OAuth identity |
 | `/api/admin/invites` | POST | Generate invite code (if using invite-gated registration) |
+
+## WebSocket Protocol
+
+### Endpoint: `WS /api/session/:id/stream`
+
+Bidirectional terminal streaming. On connect, server sends full screen state. Then sends deltas at 30ms intervals.
+
+### Server → Client Messages
+
+**Initial screen (on connect):**
+```json
+{
+  "type": "screen",
+  "width": 80,
+  "height": 24,
+  "cursor": { "x": 5, "y": 12 },
+  "title": "session name | *root | 5m",
+  "lines": [
+    { "spans": [{ "text": "hello", "fg": "#c0c0c0", "bg": "#000000" }] },
+    { "spans": [] }
+  ]
+}
+```
+
+**Delta (30ms batched, only changed lines):**
+```json
+{
+  "type": "delta",
+  "cursor": { "x": 5, "y": 12 },
+  "title": "session name | *root | 5m",
+  "changed": {
+    "5": { "spans": [{ "text": "updated line", "fg": "#ffffff" }] },
+    "12": { "spans": [{ "text": "another change" }] }
+  }
+}
+```
+
+Keys in `changed` are viewport-relative line indices (strings). Title updates on every delta (includes uptime).
+
+**Scroll response:**
+```json
+{
+  "type": "screen",
+  "width": 80,
+  "height": 24,
+  "cursor": { "x": 0, "y": 0 },
+  "title": "...",
+  "scrollOffset": 20,
+  "maxScrollback": 5000,
+  "lines": [...]
+}
+```
+
+When `scrollOffset > 0`, cursor is `{x:0, y:0}` (not meaningful in history). `maxScrollback` is total lines of history available.
+
+### Client → Server Messages
+
+**Keystroke:**
+```json
+{ "type": "input", "keys": "hello" }
+```
+
+**Special key:**
+```json
+{ "type": "input", "specialKey": "Enter" }
+```
+
+Special key names: Enter, Tab, Escape, Backspace, Delete, Up, Down, Right, Left, Home, End, PageUp, PageDown, Insert, F1-F12.
+
+**Ctrl combo:**
+```json
+{ "type": "input", "keys": "c", "ctrl": true }
+```
+
+**Alt combo:**
+```json
+{ "type": "input", "keys": "x", "alt": true }
+```
+
+**Scroll:**
+```json
+{ "type": "scroll", "offset": 20 }
+```
+
+Offset is lines from bottom. 0 = live viewport. Server responds with a `screen` message.
+
+**Resize:**
+```json
+{ "type": "resize", "cols": 120, "rows": 40 }
+```
+
+Server responds with a full `screen` message after 50ms delay.
+
+### Span Format
+
+```json
+{
+  "text": "content",
+  "fg": "#c0c0c0",
+  "bg": "#000000",
+  "bold": true,
+  "italic": false,
+  "underline": false,
+  "dim": false,
+  "strikethrough": false
+}
+```
+
+All style fields are optional. Colors are hex RGB strings from the 256-color palette.
+
+### Error Responses
+
+All API endpoints return JSON on error:
+
+```json
+{ "error": "Description of what went wrong" }
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Bad request (missing params, invalid provider) |
+| 401 | Not authenticated (missing/expired cookie) |
+| 404 | Session not found |
+| 500 | Server error (OAuth callback failure, etc.) |

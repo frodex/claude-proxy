@@ -118,6 +118,41 @@ YesNo prompts currently clear the screen. Should render inline on the form.
 
 ---
 
+## Cautions for Next Agent
+
+### What I was careful about
+- Never killing tmux sessions — always detach, never kill. `systemctl restart` detaches cleanly.
+- Both arrow key variants (`\x1b[A` and `\x1bOA`) — tested with PuTTY which switches between them.
+- ESM imports — caught `require()` errors 3 times. Everything must be `import`.
+- Temp scripts for tmux launch commands — nested quoting breaks otherwise.
+
+### What surprised me
+- `@xterm/headless` 6.x removed `onRender` silently — caused a crash loop that only showed up after installing new deps (the npm install pulled a newer version).
+- Claude on ct100 had a corrupt npm install — the package directory was empty. Caused by a failed auto-update (ENOTEMPTY during rename).
+- `su -c` doesn't pass stdin — remote launcher prompts auto-accepted because `read` got EOF. Fixed by running launcher as root, `su` only at final exec.
+- The `~/.claude/sessions/<pid>.json` files are the fastest way to discover Claude session IDs — much faster than scanning JSONL files.
+
+### Widget test coverage
+- parseKey: 19 tests — solid, covers both variants
+- ListPicker: 11 tests — navigation, wrap, disabled skip, select/cancel
+- TextInput: 11 tests — typing, backspace, submit, tab, paste, masked
+- YesNoPrompt: 8 tests — y/n/enter/escape
+- CheckboxPicker: 7 tests — toggle, nav, submit, manual entry. **Thin coverage on edge cases: what happens with empty list? Toggle-all?**
+- ComboInput: 10 tests — mode switching, pre-fill, tab. **No tests for tab-completion callback integration.**
+- FlowEngine: 7 tests — step advance, conditions, cancel. **No tests for escape from middle of flow, or back-navigation.**
+- Renderers: 6 tests — basic output checks. **No tests for long labels, terminal width truncation, or ANSI code correctness.**
+
+### Auth activation sequence
+1. Set OAuth env vars in claude-proxy.yaml (client_id, client_secret for Google/Microsoft/GitHub)
+2. Set session.secret (random string for cookie signing)
+3. Pass OAuth options to `startApiServer()` in index.ts (NOT YET DONE — item 7 in todos)
+4. Create `cp-users` group: `groupadd cp-users`
+5. The SQLite DB auto-creates on first use at `data/users.db`
+6. Without OAuth configured, auth routes return "not configured" — no breakage
+7. Auth middleware is NOT applied to existing endpoints yet — backward compatible
+
+---
+
 ## Key Files
 
 | File | Lines | What it does |
