@@ -132,7 +132,7 @@ function renderInlineWidget(widget: any): string {
   // ComboInput — has mode, picker, text sub-states
   if (widget.state?.mode !== undefined && widget.state?.picker && widget.state?.text) {
     if (widget.state.mode === 'text') {
-      return widget.state.text.buffer + '\x1b[K';
+      return widget.state.text.buffer + '\x1b[7m \x1b[0m\x1b[K';
     }
     // picker mode
     const item = widget.state.picker.items?.[widget.state.picker.cursor];
@@ -142,7 +142,7 @@ function renderInlineWidget(widget: any): string {
   // TextInput — has buffer
   if (widget.state?.buffer !== undefined) {
     const display = widget.state.masked ? '*'.repeat(widget.state.buffer.length) : widget.state.buffer;
-    return display + '\x1b[K';
+    return display + '\x1b[7m \x1b[0m\x1b[K';
   }
 
   // YesNoPrompt — has defaultValue + prompt
