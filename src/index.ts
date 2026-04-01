@@ -8,10 +8,17 @@ import { Lobby } from './lobby.js';
 import { DirScanner } from './dir-scanner.js';
 import { setScrollRegion } from './ansi.js';
 import { wrapCursor } from './interactive-menu.js';
-import { getClaudeUsers, getClaudeGroups, sanitizeGroupName, isUserInGroup } from './user-utils.js';
+import { parseKey } from './widgets/keys.js';
+import { ListPicker } from './widgets/list-picker.js';
+import { TextInput } from './widgets/text-input.js';
+import { YesNoPrompt } from './widgets/yes-no.js';
+import { CheckboxPicker } from './widgets/checkbox-picker.js';
+import { ComboInput } from './widgets/combo-input.js';
+import { FlowEngine, type FlowStep } from './widgets/flow-engine.js';
+import { renderListPicker, renderTextInput, renderYesNo, renderCheckboxPicker, renderComboInput } from './widgets/renderers.js';
+import { getClaudeUsers, getClaudeGroups, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, saveSessionMeta, loadSessionMeta, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
-import { color } from './ansi.js';
 import { createHash } from 'crypto';
 import { existsSync, readdirSync, statSync } from 'fs';
 import type { Client, Session, SessionAccess } from './types.js';
@@ -66,28 +73,7 @@ const clientState: Map<string, {
   client: Client;
 }> = new Map();
 
-const creationFlow: Map<string, {
-  step: 'name' | 'workdir' | 'runas' | 'server' | 'hidden' | 'viewonly' | 'public' | 'users' | 'groups' | 'password' | 'dangermode';
-  isResume?: boolean;
-  name: string;
-  workingDir?: string;
-  workdirMode: 'picker' | 'freehand';
-  workdirCursor: number;
-  runAsUser?: string;
-  remoteHost?: string;
-  serverCursor?: number;
-  hidden: boolean;
-  viewOnly: boolean;
-  dangerousSkipPermissions: boolean;
-  public: boolean;
-  selectedUsers: Set<string>;
-  selectedGroups: Set<string>;
-  availableUsers: string[];
-  availableGroups: Array<{ name: string; systemName: string }>;
-  userCursor: number;
-  groupCursor: number;
-  buffer: string;
-}> = new Map();
+const creationFlows: Map<string, { flow: FlowEngine; isResume?: boolean }> = new Map();
 
 // Password hashing (simple SHA-256 — not bcrypt to avoid dependency)
 function hashPassword(pw: string): string {
@@ -147,23 +133,158 @@ function joinSession(client: Client, sessionId: string): void {
   });
 }
 
-function renderServerPicker(client: Client, flow: { serverCursor?: number; remoteHost?: string }): void {
-  const remotes = config.remotes || [];
-  const cursor = flow.serverCursor ?? 0;
+function buildCreateSessionSteps(client: Client): FlowStep[] {
+  return [
+    {
+      id: 'name',
+      label: 'Session name',
+      createWidget: () => new TextInput({ prompt: 'Session name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+    {
+      id: 'runas',
+      label: 'Run as user',
+      createWidget: () => new TextInput({ prompt: `Run as user [${client.username}]`, initial: client.username }),
+      condition: () => isAdmin(client.username),
+      onResult: (e, acc) => { acc.runAsUser = e.value || client.username; },
+    },
+    {
+      id: 'server',
+      label: 'Server',
+      createWidget: () => {
+        const items = [{ label: 'local' }];
+        for (const r of config.remotes || []) {
+          items.push({ label: `${r.name} (${r.host})` });
+        }
+        return new ListPicker({ items, title: 'Select server' });
+      },
+      condition: () => isAdmin(client.username) && (config.remotes?.length ?? 0) > 0,
+      onResult: (e, acc) => {
+        if (e.index === 0) {
+          acc.remoteHost = undefined;
+        } else {
+          acc.remoteHost = (config.remotes || [])[e.index - 1]?.host;
+        }
+      },
+    },
+    {
+      id: 'workdir',
+      label: 'Working directory',
+      createWidget: (acc) => {
+        const items = [{ label: '~ (home directory)' }];
+        const history = dirScanner.getHistory();
+        const scanned = acc.remoteHost ? [] : dirScanner.scan();
+        const historySet = new Set(history);
+        for (const dir of history) items.push({ label: dir });
+        for (const dir of scanned) {
+          if (!historySet.has(dir)) items.push({ label: dir });
+        }
+        return new ComboInput({ items, prompt: 'Path', title: `Working directory${acc.remoteHost ? ` on ${acc.remoteHost}` : ''}` });
+      },
+      onResult: (e, acc) => {
+        const val = e.value || e.path;
+        if (!val || val === '~ (home directory)') {
+          acc.workingDir = undefined;
+        } else {
+          const resolved = val.startsWith('~') ? val.replace('~', process.env.HOME || '/root') : val;
+          acc.workingDir = resolved;
+        }
+      },
+    },
+    {
+      id: 'hidden',
+      label: 'Hidden session?',
+      createWidget: () => new YesNoPrompt({ prompt: 'Hidden session? (only you can see it)', defaultValue: false }),
+      onResult: (e, acc) => { acc.hidden = e.value; if (e.value) acc.public = false; },
+    },
+    {
+      id: 'viewonly',
+      label: 'View-only?',
+      createWidget: () => new YesNoPrompt({ prompt: 'View-only? (only you can type, others watch)', defaultValue: false }),
+      onResult: (e, acc) => { acc.viewOnly = e.value; },
+    },
+    {
+      id: 'public',
+      label: 'Public session?',
+      createWidget: () => new YesNoPrompt({ prompt: 'Public session? (anyone can join)', defaultValue: true }),
+      condition: (acc) => !acc.hidden,
+      onResult: (e, acc) => { acc.public = e.value; },
+    },
+    {
+      id: 'users',
+      label: 'Allowed users',
+      createWidget: () => {
+        const users = getClaudeUsers().filter(u => u !== client.username);
+        return new CheckboxPicker({
+          items: users.map(u => ({ label: u })),
+          title: 'Select users who can join',
+          hint: 'space=toggle, enter=done',
+          allowManualEntry: true,
+        });
+      },
+      condition: (acc) => !acc.hidden && !acc.public,
+      onResult: (e, acc) => {
+        if (e.type === 'submit') {
+          const users = getClaudeUsers().filter(u => u !== client.username);
+          acc.allowedUsers = e.selectedIndices.map((i: number) => users[i]).filter(Boolean);
+        }
+      },
+    },
+    {
+      id: 'groups',
+      label: 'Allowed groups',
+      createWidget: () => {
+        const groups = getClaudeGroups();
+        return new CheckboxPicker({
+          items: groups.map(g => ({ label: `${g.name} (${g.systemName})` })),
+          title: 'Select groups who can join',
+          hint: 'space=toggle, enter=done',
+          allowManualEntry: true,
+        });
+      },
+      condition: (acc) => !acc.hidden && !acc.public,
+      onResult: (e, acc) => {
+        if (e.type === 'submit') {
+          const groups = getClaudeGroups();
+          acc.allowedGroups = e.selectedIndices.map((i: number) => groups[i]?.name).filter(Boolean);
+        }
+      },
+    },
+    {
+      id: 'password',
+      label: 'Password',
+      createWidget: () => new TextInput({ prompt: 'Password (enter for none)', masked: true }),
+      onResult: (e, acc) => { acc.password = e.value || ''; },
+    },
+    {
+      id: 'dangermode',
+      label: 'Skip permissions?',
+      createWidget: () => new YesNoPrompt({ prompt: 'Skip permissions (--dangerously-skip-permissions)?', defaultValue: false }),
+      condition: () => isAdmin(client.username),
+      onResult: (e, acc) => { acc.dangerousSkipPermissions = e.value; },
+    },
+  ];
+}
 
-  client.write('\x1b[2J\x1b[H');
-  client.write('  \x1b[1mRun on server:\x1b[0m\r\n\r\n');
+function renderCurrentStep(client: Client): void {
+  const entry = creationFlows.get(client.id);
+  if (!entry) return;
 
-  // Local is always first option
-  const localArrow = cursor === 0 ? '\x1b[33m>\x1b[0m' : ' ';
-  client.write(`  ${localArrow} \x1b[33m[0]\x1b[0m local\r\n`);
+  const state = entry.flow.getCurrentState();
+  const widget = state.widget;
 
-  for (let i = 0; i < remotes.length; i++) {
-    const arrow = cursor === i + 1 ? '\x1b[33m>\x1b[0m' : ' ';
-    client.write(`  ${arrow} \x1b[33m[${i + 1}]\x1b[0m ${remotes[i].name} \x1b[38;5;245m(${remotes[i].host})\x1b[0m\r\n`);
+  if (widget instanceof TextInput) {
+    client.write('\x1b[2J\x1b[H');
+    client.write(renderTextInput(widget.state));
+  } else if (widget instanceof YesNoPrompt) {
+    client.write(renderYesNo(widget.state));
+  } else if (widget instanceof ListPicker) {
+    client.write(renderListPicker(widget.state));
+  } else if (widget instanceof CheckboxPicker) {
+    client.write(renderCheckboxPicker(widget.state));
+  } else if (widget instanceof ComboInput) {
+    client.write(renderComboInput(widget.state));
   }
-
-  client.write('\r\n  \x1b[38;5;245marrows to select, enter to confirm\x1b[0m\r\n');
 }
 
 function isAdmin(username: string): boolean {
@@ -171,62 +292,13 @@ function isAdmin(username: string): boolean {
 }
 
 function startNewSessionFlow(client: Client): void {
-  creationFlow.set(client.id, {
-    step: 'name',
-    name: '',
-    workdirMode: 'picker',
-    workdirCursor: 0,
-    runAsUser: client.username,
-    hidden: false,
-    viewOnly: false,
-    dangerousSkipPermissions: false,
-    public: true,
-    selectedUsers: new Set(),
-    selectedGroups: new Set(),
-    availableUsers: getClaudeUsers().filter(u => u !== client.username),
-    availableGroups: getClaudeGroups(),
-    userCursor: 0,
-    groupCursor: 0,
-    buffer: '',
-  });
+  const flow = new FlowEngine(buildCreateSessionSteps(client));
+  creationFlows.set(client.id, { flow });
   client.write('\x1b[2J\x1b[H');
   client.write(`\x1b[1mNew session\x1b[0m (as ${client.username})\r\n\r\n`);
-  client.write('Session name: ');
+  renderCurrentStep(client);
 }
 
-function renderUserPicker(flow: ReturnType<typeof creationFlow.get>, client: Client): void {
-  if (!flow) return;
-  client.write('\x1b[2J\x1b[H');
-  client.write('\x1b[1mSelect users who can join:\x1b[0m (space=toggle, enter=done)\r\n\r\n');
-  flow.availableUsers.forEach((u, i) => {
-    const selected = flow.selectedUsers.has(u);
-    const cursor = i === flow.userCursor ? '>' : ' ';
-    const check = selected ? '\x1b[32m[x]\x1b[0m' : '[ ]';
-    client.write(`  ${cursor} ${check} ${u}\r\n`);
-  });
-  if (flow.availableUsers.length === 0) {
-    client.write('  (no other Claude users found)\r\n');
-  }
-  client.write('\r\n  Type a username to add: ');
-  if (flow.buffer) client.write(flow.buffer);
-}
-
-function renderGroupPicker(flow: ReturnType<typeof creationFlow.get>, client: Client): void {
-  if (!flow) return;
-  client.write('\x1b[2J\x1b[H');
-  client.write('\x1b[1mSelect groups who can join:\x1b[0m (space=toggle, enter=done)\r\n\r\n');
-  flow.availableGroups.forEach((g, i) => {
-    const selected = flow.selectedGroups.has(g.name);
-    const cursor = i === flow.groupCursor ? '>' : ' ';
-    const check = selected ? '\x1b[32m[x]\x1b[0m' : '[ ]';
-    client.write(`  ${cursor} ${check} ${g.name} (${g.systemName})\r\n`);
-  });
-  if (flow.availableGroups.length === 0) {
-    client.write('  (no cp-* groups found)\r\n');
-  }
-  client.write('\r\n  Type a group name to add: ');
-  if (flow.buffer) client.write(flow.buffer);
-}
 
 function tabComplete(partial: string): { completed: string; options: string[] } {
   // Resolve ~ to home
@@ -267,110 +339,38 @@ function tabComplete(partial: string): { completed: string; options: string[] } 
   return { completed: display, options: entries };
 }
 
-function getWorkdirItems(flow: { remoteHost?: string }): Array<{ path: string; label: string }> {
-  const items: Array<{ path: string; label: string }> = [];
-  items.push({ path: '~', label: '~ (home directory)' });
 
-  const history = dirScanner.getHistory();
-  const scanned = flow.remoteHost ? [] : dirScanner.scan();
-  const historySet = new Set(history);
-
-  for (const dir of history) {
-    items.push({ path: dir, label: dir });
-  }
-  for (const dir of scanned) {
-    if (!historySet.has(dir)) {
-      items.push({ path: dir, label: dir });
-    }
-  }
-  return items;
-}
-
-function renderWorkdirPrompt(client: Client, flow: ReturnType<typeof creationFlow.get>): void {
-  if (!flow) return;
-
-  client.write('\x1b[2J\x1b[H');
-  const where = flow.remoteHost ? ` on \x1b[36m${flow.remoteHost}\x1b[0m` : '';
-  client.write(`\x1b[1mWorking directory${where}:\x1b[0m\r\n`);
-
-  if (flow.workdirMode === 'picker') {
-    const items = getWorkdirItems(flow);
-    const history = dirScanner.getHistory();
-    const scanned = flow.remoteHost ? [] : dirScanner.scan();
-    const historySet = new Set(history);
-
-    let idx = 0;
-    // Home
-    const homeArrow = idx === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
-    client.write(`\r\n  ${homeArrow} ~ (home directory)\r\n`);
-    idx++;
-
-    // Recent
-    if (history.length > 0) {
-      client.write('\r\n  \x1b[38;5;245mRecent:\x1b[0m\r\n');
-      for (const dir of history) {
-        const arrow = idx === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
-        client.write(`  ${arrow} ${dir}\r\n`);
-        idx++;
-      }
-    }
-
-    // Projects (local only)
-    const projects = scanned.filter(d => !historySet.has(d));
-    if (projects.length > 0) {
-      client.write('\r\n  \x1b[38;5;245mProjects:\x1b[0m\r\n');
-      for (const dir of projects) {
-        const arrow = idx === flow.workdirCursor ? '\x1b[33m>\x1b[0m' : ' ';
-        client.write(`  ${arrow} ${dir}\r\n`);
-        idx++;
-      }
-    }
-
-    const tabHint = flow.remoteHost ? '' : ', tab=complete';
-    client.write(`\r\n  \x1b[38;5;245marrows=select, enter=choose, type=freehand${tabHint}, esc=cancel\x1b[0m\r\n`);
-  } else {
-    // Freehand mode
-    const tabHint = flow.remoteHost ? '' : ', tab=complete';
-    client.write(`  \x1b[38;5;245mesc=back to list${tabHint}\x1b[0m\r\n`);
-    client.write(`\r\n  Path: ${flow.buffer}`);
-  }
-}
-
-function finalizeSession(client: Client): void {
-  const flow = creationFlow.get(client.id);
-  if (!flow) return;
-  creationFlow.delete(client.id);
-
+function finalizeSessionFromResults(client: Client, results: Record<string, any>, isResume?: boolean): void {
   const access: Partial<SessionAccess> = {
     owner: client.username,
-    hidden: flow.hidden,
-    public: flow.public,
-    allowedUsers: Array.from(flow.selectedUsers),
-    allowedGroups: Array.from(flow.selectedGroups),
-    passwordHash: flow.buffer ? hashPassword(flow.buffer) : null,
-    viewOnly: flow.viewOnly,
+    hidden: results.hidden ?? false,
+    public: results.public ?? true,
+    allowedUsers: results.allowedUsers ?? [],
+    allowedGroups: results.allowedGroups ?? [],
+    passwordHash: results.password ? hashPassword(results.password) : null,
+    viewOnly: results.viewOnly ?? false,
   };
 
   try {
     const commandArgs: string[] = [];
-    if (flow.isResume) commandArgs.push('--resume');
-    if (flow.dangerousSkipPermissions) commandArgs.push('--dangerously-skip-permissions');
-    const runAs = flow.runAsUser || client.username;
-    const remote = flow.remoteHost || undefined;
-    console.log(`[create] ${client.username} creating "${flow.name}" as ${runAs} on ${remote || 'local'}`);
-    const session = sessionManager.createSession(flow.name, client, runAs, 'claude', access, commandArgs, remote, flow.workingDir);
-    if (flow.workingDir) {
-      dirScanner.addToHistory(flow.workingDir);
-    }
+    if (isResume) commandArgs.push('--resume');
+    if (results.dangerousSkipPermissions) commandArgs.push('--dangerously-skip-permissions');
+    const runAs = results.runAsUser || client.username;
+    const remote = results.remoteHost || undefined;
+    const workDir = results.workingDir || undefined;
+
+    console.log(`[create] ${client.username} creating "${results.name}" as ${runAs} on ${remote || 'local'}`);
+    const session = sessionManager.createSession(results.name, client, runAs, 'claude', access, commandArgs, remote, workDir);
+
+    if (workDir) dirScanner.addToHistory(workDir);
+
     const state = clientState.get(client.id);
     if (state) {
       state.mode = 'session';
       state.sessionId = session.id;
     }
     sessionManager.setOnClientDetach(session.id, (detachedClient) => {
-      if (detachedClient.id === client.id) {
-        showLobby(client);
-      }
+      if (detachedClient.id === client.id) showLobby(client);
     });
     client.write('\x1b[2J\x1b[H');
   } catch (err: any) {
@@ -559,30 +559,11 @@ function handleResumeIdInput(client: Client, data: Buffer): void {
 }
 
 function launchDeepScan(client: Client): void {
-  // Go through session creation flow, then launch with --resume
-  // Reuse the creation flow but mark it as a resume
-  creationFlow.set(client.id, {
-    step: 'name',
-    name: '',
-    workdirMode: 'picker',
-    workdirCursor: 0,
-    runAsUser: client.username,
-    hidden: false,
-    viewOnly: false,
-    dangerousSkipPermissions: false,
-    public: true,
-    selectedUsers: new Set(),
-    selectedGroups: new Set(),
-    availableUsers: getClaudeUsers().filter(u => u !== client.username),
-    availableGroups: getClaudeGroups(),
-    userCursor: 0,
-    groupCursor: 0,
-    buffer: '',
-    isResume: true,
-  });
+  const flow = new FlowEngine(buildCreateSessionSteps(client));
+  creationFlows.set(client.id, { flow, isResume: true });
   client.write('\x1b[2J\x1b[H');
   client.write(`\x1b[1mDeep scan — new session with Claude resume picker\x1b[0m (as ${client.username})\r\n\r\n`);
-  client.write('Session name: ');
+  renderCurrentStep(client);
 }
 
 function startExportFlow(client: Client): void {
@@ -704,397 +685,36 @@ function handleExportInput(client: Client, data: Buffer): void {
 }
 
 function handleCreationInput(client: Client, data: Buffer): void {
-  const flow = creationFlow.get(client.id);
-  if (!flow) return;
+  const entry = creationFlows.get(client.id);
+  if (!entry) return;
 
-  const str = data.toString();
+  const key = parseKey(data);
+  const event = entry.flow.handleKey(key);
 
-  // Escape cancels at any step
-  if (str === '\x1b' && data.length === 1) {
-    creationFlow.delete(client.id);
+  if (event.type === 'flow-complete') {
+    creationFlows.delete(client.id);
+    finalizeSessionFromResults(client, event.results, entry.isResume);
+  } else if (event.type === 'flow-cancelled') {
+    creationFlows.delete(client.id);
     showLobby(client);
-    return;
-  }
-
-  if (flow.step === 'name') {
-    if (str === '\x7f' || str === '\b') {
-      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
-      return;
-    }
-    if (str === '\r' || str === '\n') {
-      if (flow.buffer.trim() === '') { client.write('\r\nName cannot be empty. Session name: '); return; }
-      flow.name = flow.buffer.trim();
-      flow.buffer = '';
-      if (isAdmin(client.username)) {
-        flow.step = 'runas';
-        client.write(`\r\n\r\nRun as user [${client.username}]: `);
-      } else {
-        flow.step = 'workdir';
-        renderWorkdirPrompt(client, flow);
-      }
-      return;
-    }
-    flow.buffer += str;
-    client.write(str);
-    return;
-  }
-
-  if (flow.step === 'workdir') {
-    const advanceFromWorkdir = () => {
-      flow.step = 'hidden';
-      client.write(`\r\n\r\nHidden session? (only you can see it) [\x1b[1mN\x1b[0m/y]: `);
-    };
-
-    // Escape
-    if (str === '\x1b' && data.length === 1) {
-      if (flow.workdirMode === 'freehand') {
-        // Back to picker
-        flow.workdirMode = 'picker';
-        flow.buffer = '';
-        renderWorkdirPrompt(client, flow);
-      } else {
-        creationFlow.delete(client.id);
-        showLobby(client);
-      }
-      return;
-    }
-
-    if (flow.workdirMode === 'picker') {
-      const items = getWorkdirItems(flow);
-
-      // Arrow up
-      if (str === '\x1b[A' || str === '\x1bOA') {
-        flow.workdirCursor = wrapCursor(flow.workdirCursor, items.length, -1);
-        renderWorkdirPrompt(client, flow);
-        return;
-      }
-      // Arrow down
-      if (str === '\x1b[B' || str === '\x1bOB') {
-        flow.workdirCursor = wrapCursor(flow.workdirCursor, items.length, 1);
-        renderWorkdirPrompt(client, flow);
-        return;
-      }
-      // Enter — select item and switch to freehand with it pre-filled
-      if (str === '\r' || str === '\n') {
-        const selected = items[flow.workdirCursor];
-        if (selected) {
-          if (selected.path === '~') {
-            flow.workingDir = undefined;
-            flow.buffer = '';
-            advanceFromWorkdir();
-          } else {
-            // Pre-fill freehand so user can append (e.g. /inspector)
-            flow.workdirMode = 'freehand';
-            flow.buffer = selected.path;
-            renderWorkdirPrompt(client, flow);
-          }
+  } else if (event.type === 'step-complete') {
+    renderCurrentStep(client);
+  } else if (event.type === 'widget-event') {
+    // Handle tab-completion for ComboInput
+    const widgetEvent = event.event;
+    if (widgetEvent.type === 'tab') {
+      const result = tabComplete(widgetEvent.partial || '~');
+      const state = entry.flow.getCurrentState();
+      if (state.widget && 'setTextBuffer' in state.widget) {
+        if (result.completed !== (widgetEvent.partial || '~')) {
+          (state.widget as any).setTextBuffer(result.completed);
         }
-        return;
       }
-      // Space — select and advance immediately (no freehand edit)
-      if (str === ' ') {
-        const selected = items[flow.workdirCursor];
-        if (selected) {
-          flow.workingDir = selected.path === '~' ? undefined : selected.path;
-          flow.buffer = '';
-          advanceFromWorkdir();
-        }
-        return;
-      }
-      // Tab or / or any printable — switch to freehand
-      if (str === '\t' || str === '/' || (str.length === 1 && str >= ' ')) {
-        flow.workdirMode = 'freehand';
-        flow.buffer = str === '\t' ? '' : str;
-        renderWorkdirPrompt(client, flow);
-        return;
-      }
-      return;
     }
-
-    // Freehand mode
-    // Backspace
-    if (str === '\x7f' || str === '\b') {
-      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
-      return;
-    }
-    // Tab — filesystem completion (local only)
-    if (str === '\t' && !flow.remoteHost) {
-      const input = flow.buffer || '~';
-      const result = tabComplete(input);
-      if (result.completed !== input) {
-        flow.buffer = result.completed;
-        renderWorkdirPrompt(client, flow);
-      } else if (result.options.length > 1) {
-        client.write('\r\n');
-        for (const opt of result.options) {
-          client.write(`  ${opt}\r\n`);
-        }
-        client.write(`\r\n  Path: ${flow.buffer}`);
-      }
-      return;
-    }
-    // Enter — confirm path
-    if (str === '\r' || str === '\n') {
-      const dir = flow.buffer.trim();
-      if (!dir) {
-        flow.workingDir = undefined;
-      } else {
-        const resolved = dir.startsWith('~') ? dir.replace('~', process.env.HOME || '/root') : dir;
-        flow.workingDir = resolved;
-      }
-      flow.buffer = '';
-      advanceFromWorkdir();
-      return;
-    }
-    // Printable character
-    flow.buffer += str;
-    client.write(str);
-    return;
-  }
-
-  if (flow.step === 'runas') {
-    if (str === '\x7f' || str === '\b') {
-      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
-      return;
-    }
-    if (str === '\r' || str === '\n') {
-      flow.runAsUser = flow.buffer.trim() || client.username;
-      flow.buffer = '';
-      // If root and remotes configured, show server picker
-      if (client.username === 'root' && config.remotes && config.remotes.length > 0) {
-        flow.step = 'server';
-        flow.serverCursor = 0;
-        renderServerPicker(client, flow);
-      } else {
-        flow.step = 'workdir';
-        renderWorkdirPrompt(client, flow);
-      }
-      return;
-    }
-    flow.buffer += str;
-    client.write(str);
-    return;
-  }
-
-  if (flow.step === 'server') {
-    const remotes = config.remotes || [];
-    const totalOptions = remotes.length + 1; // +1 for local
-
-    if (str === '\x1b[A' || str === '\x1bOA') {
-      flow.serverCursor = wrapCursor(flow.serverCursor ?? 0, totalOptions, -1);
-      renderServerPicker(client, flow);
-      return;
-    }
-    if (str === '\x1b[B' || str === '\x1bOB') {
-      flow.serverCursor = wrapCursor(flow.serverCursor ?? 0, totalOptions, 1);
-      renderServerPicker(client, flow);
-      return;
-    }
-    // Number shortcut
-    if (/^[0-9]$/.test(str)) {
-      const idx = parseInt(str);
-      if (idx < totalOptions) {
-        flow.serverCursor = idx;
-        renderServerPicker(client, flow);
-      }
-      return;
-    }
-    if (str === '\r' || str === '\n' || str === ' ') {
-      const cursor = flow.serverCursor ?? 0;
-      if (cursor === 0) {
-        flow.remoteHost = undefined; // local
-      } else {
-        flow.remoteHost = remotes[cursor - 1].host;
-      }
-      flow.step = 'workdir';
-      renderWorkdirPrompt(client, flow);
-      return;
-    }
-    if (str === '\x1b' && data.length === 1) {
-      creationFlow.delete(client.id);
-      showLobby(client);
-      return;
-    }
-    return;
-  }
-
-  if (flow.step === 'hidden') {
-    if (str === 'y' || str === 'Y') {
-      flow.hidden = true;
-      flow.public = false;
-      flow.step = 'viewonly';
-      client.write('y\r\n\r\nView-only? (only you can type, others watch) [\x1b[1mN\x1b[0m/y]: ');
-      return;
-    }
-    if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
-      flow.hidden = false;
-      flow.step = 'viewonly';
-      client.write('n\r\n\r\nView-only? (only you can type, others watch) [\x1b[1mN\x1b[0m/y]: ');
-      return;
-    }
-    return;
-  }
-
-  if (flow.step === 'viewonly') {
-    if (str === 'y' || str === 'Y') {
-      flow.viewOnly = true;
-      client.write('y');
-    } else if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
-      flow.viewOnly = false;
-      client.write('n');
-    } else {
-      return;
-    }
-    // If hidden, skip public/users/groups — go straight to password
-    if (flow.hidden) {
-      flow.step = 'password';
-      client.write('\r\n\r\nPassword (enter for none): ');
-      flow.buffer = '';
-    } else {
-      flow.step = 'public';
-      client.write('\r\n\r\nPublic session? (anyone can join) [\x1b[1mY\x1b[0m/n]: ');
-    }
-    return;
-  }
-
-  if (flow.step === 'public') {
-    if (str === 'y' || str === 'Y' || str === '\r' || str === '\n') {
-      flow.public = true;
-      flow.step = 'password';
-      client.write('y\r\n\r\nPassword (enter for none): ');
-      flow.buffer = '';
-      return;
-    }
-    if (str === 'n' || str === 'N') {
-      flow.public = false;
-      flow.step = 'users';
-      flow.buffer = '';
-      renderUserPicker(flow, client);
-      return;
-    }
-    return;
-  }
-
-  if (flow.step === 'users') {
-    // Arrow up
-    if (str === '\x1b[A' || str === '\x1bOA') {
-      flow.userCursor = wrapCursor(flow.userCursor, flow.availableUsers.length, -1);
-      renderUserPicker(flow, client);
-      return;
-    }
-    // Arrow down
-    if (str === '\x1b[B' || str === '\x1bOB') {
-      flow.userCursor = wrapCursor(flow.userCursor, flow.availableUsers.length, 1);
-      renderUserPicker(flow, client);
-      return;
-    }
-    // Space toggles
-    if (str === ' ') {
-      const user = flow.availableUsers[flow.userCursor];
-      if (user) {
-        if (flow.selectedUsers.has(user)) flow.selectedUsers.delete(user);
-        else flow.selectedUsers.add(user);
-      }
-      renderUserPicker(flow, client);
-      return;
-    }
-    // Enter proceeds
-    if (str === '\r' || str === '\n') {
-      // If there's text in buffer, add as manual user
-      if (flow.buffer.trim()) {
-        flow.selectedUsers.add(flow.buffer.trim());
-        flow.buffer = '';
-      }
-      flow.step = 'groups';
-      flow.buffer = '';
-      renderGroupPicker(flow, client);
-      return;
-    }
-    // Backspace
-    if (str === '\x7f' || str === '\b') {
-      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); renderUserPicker(flow, client); }
-      return;
-    }
-    // Typing a username
-    flow.buffer += str;
-    client.write(str);
-    return;
-  }
-
-  if (flow.step === 'groups') {
-    if (str === '\x1b[A' || str === '\x1bOA') {
-      flow.groupCursor = wrapCursor(flow.groupCursor, flow.availableGroups.length, -1);
-      renderGroupPicker(flow, client);
-      return;
-    }
-    if (str === '\x1b[B' || str === '\x1bOB') {
-      flow.groupCursor = wrapCursor(flow.groupCursor, flow.availableGroups.length, 1);
-      renderGroupPicker(flow, client);
-      return;
-    }
-    if (str === ' ') {
-      const group = flow.availableGroups[flow.groupCursor];
-      if (group) {
-        if (flow.selectedGroups.has(group.name)) flow.selectedGroups.delete(group.name);
-        else flow.selectedGroups.add(group.name);
-      }
-      renderGroupPicker(flow, client);
-      return;
-    }
-    if (str === '\r' || str === '\n') {
-      // If there's text in buffer, add as manual group
-      if (flow.buffer.trim()) {
-        const name = sanitizeGroupName(flow.buffer.trim());
-        if (name) flow.selectedGroups.add(name);
-        flow.buffer = '';
-      }
-      flow.step = 'password';
-      flow.buffer = '';
-      client.write('\x1b[2J\x1b[H');
-      client.write('Password (enter for none): ');
-      return;
-    }
-    if (str === '\x7f' || str === '\b') {
-      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); renderGroupPicker(flow, client); }
-      return;
-    }
-    flow.buffer += str;
-    client.write(str);
-    return;
-  }
-
-  if (flow.step === 'password') {
-    if (str === '\x7f' || str === '\b') {
-      if (flow.buffer.length > 0) { flow.buffer = flow.buffer.slice(0, -1); client.write('\b \b'); }
-      return;
-    }
-    if (str === '\r' || str === '\n') {
-      if (isAdmin(client.username)) {
-        flow.step = 'dangermode';
-        client.write(`\r\n\r\nSkip permissions (--dangerously-skip-permissions)? [\x1b[1mN\x1b[0m/y]: `);
-      } else {
-        finalizeSession(client);
-      }
-      return;
-    }
-    flow.buffer += str;
-    client.write('*');  // mask password
-    return;
-  }
-
-  if (flow.step === 'dangermode') {
-    if (str === 'y' || str === 'Y') {
-      flow.dangerousSkipPermissions = true;
-      client.write('y');
-    } else if (str === 'n' || str === 'N' || str === '\r' || str === '\n') {
-      flow.dangerousSkipPermissions = false;
-      client.write('n');
-    } else {
-      return;
-    }
-    client.write('\r\n');
-    finalizeSession(client);
-    return;
+    renderCurrentStep(client);
+  } else {
+    // Navigate events — just re-render
+    renderCurrentStep(client);
   }
 }
 
@@ -1110,7 +730,7 @@ transport.onConnect((client) => {
     const state = clientState.get(client.id);
     if (!state) return;
 
-    if (creationFlow.has(client.id)) {
+    if (creationFlows.has(client.id)) {
       handleCreationInput(client, data);
       return;
     }
@@ -1213,7 +833,7 @@ transport.onConnect((client) => {
       sessionManager.leaveSession(state.sessionId, client);
     }
     clientState.delete(client.id);
-    creationFlow.delete(client.id);
+    creationFlows.delete(client.id);
   });
 
   showLobby(client);
