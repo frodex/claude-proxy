@@ -95,7 +95,12 @@ export class FlowEngine {
       const step = this.steps[this.currentIndex];
       if (!step) return { type: 'none' };
       if (step.condition && !step.condition(this.accumulated)) return { type: 'none' };
-      this.currentWidget = step.createWidget(this.accumulated);
+      const widget = step.createWidget(this.accumulated);
+      // Don't enter edit mode for locked widgets
+      if (widget.state?.locked) {
+        return { type: 'none' };
+      }
+      this.currentWidget = widget;
       this.mode = 'edit';
       return { type: 'mode-change', mode: 'edit' };
     }
