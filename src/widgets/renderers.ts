@@ -116,7 +116,8 @@ export function renderFlowForm(
       parts.push(`  ${color}\uD83D\uDD12 ${step.label}: ${step.value || ''}${RESET}\r\n`);
     } else {
       // pending
-      parts.push(`  ${color}${step.label}: \x1b[2m[default]\x1b[0m${RESET}\r\n`);
+      const pendingVal = step.value ? `\x1b[2m${step.value}\x1b[0m` : `\x1b[2m[default]\x1b[0m`;
+      parts.push(`  ${color}${step.label}: ${pendingVal}${RESET}\r\n`);
     }
   }
 

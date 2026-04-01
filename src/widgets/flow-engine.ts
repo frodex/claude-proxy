@@ -242,7 +242,9 @@ export class FlowEngine {
       if (i === this.currentIndex) {
         return { ...base, fieldState: 'active' as const };
       }
-      return { ...base, fieldState: 'pending' as const };
+      // Show pre-filled/default value for pending fields
+      const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+      return { ...base, fieldState: 'pending' as const, value: value || undefined };
     });
   }
 
