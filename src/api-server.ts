@@ -10,8 +10,10 @@ import { join, extname, resolve } from 'path';
 import { randomBytes } from 'crypto';
 import { SessionManager } from './session-manager.js';
 import { lineToSpans, bufferToScreenState, PALETTE_256, type ScreenLine } from './screen-renderer.js';
-import type { Config, Session } from './types.js';
+import type { Config, Session, SessionAccess } from './types.js';
 import { DirScanner } from './dir-scanner.js';
+import { listDeadSessions } from './session-store.js';
+import { getClaudeUsers, getClaudeGroups } from './user-utils.js';
 import type { OAuthManager } from './auth/oauth.js';
 import type { GitHubAdapter } from './auth/github-adapter.js';
 import type { UserStore, Provisioner } from './auth/types.js';
@@ -161,18 +163,26 @@ function parseAnsiLine(raw: string): Array<{ text: string; fg?: string; bg?: str
 }
 
 export function startApiServer(options: ApiServerOptions): void {
-  const { port, host, sessionManager, staticDir, dirScanner,
+  const { port, host, sessionManager, config, staticDir, dirScanner,
     oauthManager, githubAdapter, userStore, provisioner,
     cookieSecret, cookieMaxAge } = options;
   const streamClients: Map<WebSocket, StreamClient> = new Map();
   const pendingOAuthStates: Map<string, { provider: string; createdAt: number }> = new Map();
+
+  const readBody = (req: IncomingMessage): Promise<string> =>
+    new Promise((resolve, reject) => {
+      let body = '';
+      req.on('data', (chunk: any) => body += chunk);
+      req.on('end', () => resolve(body));
+      req.on('error', reject);
+    });
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     // CORS for local development
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -330,6 +340,292 @@ export function startApiServer(options: ApiServerOptions): void {
         'Set-Cookie': 'session=; Path=/; HttpOnly; Max-Age=0',
       });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // --- Session CRUD routes ---
+
+    // POST /api/sessions — create session
+    if (url.pathname === '/api/sessions' && req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(req));
+        if (!body.name) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name is required' }));
+          return;
+        }
+
+        const access: Partial<SessionAccess> = {
+          hidden: body.hidden ?? false,
+          viewOnly: body.viewOnly ?? false,
+          public: body.public ?? true,
+          allowedUsers: body.allowedUsers ?? [],
+          allowedGroups: body.allowedGroups ?? [],
+          passwordHash: body.password ?? null,
+        };
+
+        const fakeClient = {
+          id: 'api-' + Date.now(),
+          username: 'root',
+          transport: 'websocket' as const,
+          termSize: { cols: 80, rows: 24 },
+          write: () => {},
+          lastKeystroke: Date.now(),
+        };
+
+        const args: string[] = [];
+        if (body.dangerousSkipPermissions) args.push('--dangerously-skip-permissions');
+
+        const session = sessionManager.createSession(
+          body.name, fakeClient, body.runAsUser, 'claude', access, args, undefined, body.workingDir,
+        );
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: session.id, name: session.name }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // GET /api/sessions/dead — list dead sessions
+    if (url.pathname === '/api/sessions/dead' && req.method === 'GET') {
+      try {
+        const dead = listDeadSessions();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(dead.map(d => ({
+          id: d.tmuxId,
+          name: d.name,
+          claudeSessionId: d.claudeSessionId ?? null,
+          workingDir: d.workingDir ?? null,
+          remoteHost: d.remoteHost ?? null,
+        }))));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // DELETE /api/sessions/:id — destroy session
+    if (url.pathname.match(/^\/api\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+      const id = url.pathname.split('/')[3];
+      const session = sessionManager.getSession(id);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+        return;
+      }
+      sessionManager.destroySession(id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // GET /api/sessions/:id/settings — get session settings
+    if (url.pathname.match(/^\/api\/sessions\/[^/]+\/settings$/) && req.method === 'GET') {
+      const id = url.pathname.split('/')[3];
+      const session = sessionManager.getSession(id);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        name: session.name,
+        runAsUser: session.runAsUser,
+        workingDir: (session as any).workingDir || null,
+        access: session.access,
+      }));
+      return;
+    }
+
+    // PATCH /api/sessions/:id/settings — update session settings
+    if (url.pathname.match(/^\/api\/sessions\/[^/]+\/settings$/) && req.method === 'PATCH') {
+      const id = url.pathname.split('/')[3];
+      const session = sessionManager.getSession(id);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Session not found' }));
+        return;
+      }
+      try {
+        const body = JSON.parse(await readBody(req));
+        // Only allow safe fields to be updated (not runAsUser, workingDir, remoteHost)
+        if (body.name !== undefined) (session as any).name = body.name;
+        if (body.hidden !== undefined) session.access.hidden = body.hidden;
+        if (body.viewOnly !== undefined) session.access.viewOnly = body.viewOnly;
+        if (body.public !== undefined) session.access.public = body.public;
+        if (body.allowedUsers !== undefined) session.access.allowedUsers = body.allowedUsers;
+        if (body.allowedGroups !== undefined) session.access.allowedGroups = body.allowedGroups;
+        if (body.password !== undefined) session.access.passwordHash = body.password;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err: any) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // POST /api/sessions/:id/restart — restart dead session
+    if (url.pathname.match(/^\/api\/sessions\/[^/]+\/restart$/) && req.method === 'POST') {
+      const id = url.pathname.split('/')[3];
+      try {
+        const body = JSON.parse(await readBody(req));
+        const settings = body.settings || {};
+
+        // Find dead session with this ID
+        const dead = listDeadSessions();
+        const deadSession = dead.find(d => d.tmuxId === id);
+        if (!deadSession) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Dead session not found' }));
+          return;
+        }
+
+        const access: Partial<SessionAccess> = {
+          hidden: settings.hidden ?? deadSession.access.hidden,
+          viewOnly: settings.viewOnly ?? deadSession.access.viewOnly,
+          public: settings.public ?? deadSession.access.public,
+          allowedUsers: settings.allowedUsers ?? deadSession.access.allowedUsers,
+          allowedGroups: settings.allowedGroups ?? deadSession.access.allowedGroups,
+          passwordHash: settings.password ?? deadSession.access.passwordHash,
+        };
+
+        const fakeClient = {
+          id: 'api-' + Date.now(),
+          username: deadSession.access.owner,
+          transport: 'websocket' as const,
+          termSize: { cols: 80, rows: 24 },
+          write: () => {},
+          lastKeystroke: Date.now(),
+        };
+
+        const args: string[] = [];
+        // If there's a Claude session ID, resume it
+        if (deadSession.claudeSessionId) {
+          args.push('--resume', deadSession.claudeSessionId);
+        }
+
+        const session = sessionManager.createSession(
+          settings.name ?? deadSession.name,
+          fakeClient,
+          deadSession.runAsUser,
+          'claude',
+          access,
+          args,
+          deadSession.remoteHost,
+          deadSession.workingDir,
+        );
+
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: session.id, name: session.name }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // POST /api/sessions/:id/fork — fork a session
+    if (url.pathname.match(/^\/api\/sessions\/[^/]+\/fork$/) && req.method === 'POST') {
+      const id = url.pathname.split('/')[3];
+      try {
+        const body = JSON.parse(await readBody(req));
+        const settings = body.settings || {};
+
+        // Get source session to find Claude session ID
+        const sourceSession = sessionManager.getSession(id) as any;
+        if (!sourceSession) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Source session not found' }));
+          return;
+        }
+
+        // Get Claude session ID from session store metadata
+        const { loadSessionMeta } = await import('./session-store.js');
+        const meta = loadSessionMeta(id);
+        const claudeId = meta?.claudeSessionId;
+        if (!claudeId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Source session has no Claude session ID to fork from' }));
+          return;
+        }
+
+        const access: Partial<SessionAccess> = {
+          hidden: settings.hidden ?? sourceSession.access.hidden,
+          viewOnly: settings.viewOnly ?? sourceSession.access.viewOnly,
+          public: settings.public ?? sourceSession.access.public,
+          allowedUsers: settings.allowedUsers ?? sourceSession.access.allowedUsers,
+          allowedGroups: settings.allowedGroups ?? sourceSession.access.allowedGroups,
+          passwordHash: settings.password ?? sourceSession.access.passwordHash,
+        };
+
+        const fakeClient = {
+          id: 'api-' + Date.now(),
+          username: sourceSession.access.owner,
+          transport: 'websocket' as const,
+          termSize: { cols: 80, rows: 24 },
+          write: () => {},
+          lastKeystroke: Date.now(),
+        };
+
+        const args = ['--resume', claudeId, '--fork-session'];
+
+        const forkedSession = sessionManager.createSession(
+          settings.name ?? `${sourceSession.name}-fork`,
+          fakeClient,
+          sourceSession.runAsUser,
+          'claude',
+          access,
+          args,
+          sourceSession.remoteHost,
+          sourceSession.workingDir,
+        );
+
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: forkedSession.id, name: forkedSession.name }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // --- Supporting endpoints ---
+
+    // GET /api/remotes — list configured remote hosts
+    if (url.pathname === '/api/remotes' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(config.remotes || []));
+      return;
+    }
+
+    // GET /api/users — list available users
+    if (url.pathname === '/api/users' && req.method === 'GET') {
+      try {
+        const users = getClaudeUsers();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(users));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // GET /api/groups — list available groups
+    if (url.pathname === '/api/groups' && req.method === 'GET') {
+      try {
+        const groups = getClaudeGroups();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(groups));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
       return;
     }
 
