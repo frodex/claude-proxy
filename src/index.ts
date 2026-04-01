@@ -9,12 +9,10 @@ import { DirScanner } from './dir-scanner.js';
 import { setScrollRegion } from './ansi.js';
 import { parseKey } from './widgets/keys.js';
 import { ListPicker } from './widgets/list-picker.js';
-import { TextInput } from './widgets/text-input.js';
-import { YesNoPrompt } from './widgets/yes-no.js';
 import { CheckboxPicker } from './widgets/checkbox-picker.js';
-import { ComboInput } from './widgets/combo-input.js';
-import { FlowEngine, type FlowStep } from './widgets/flow-engine.js';
-import { renderListPicker, renderTextInput, renderYesNo, renderCheckboxPicker, renderComboInput } from './widgets/renderers.js';
+import { FlowEngine } from './widgets/flow-engine.js';
+import { renderListPicker, renderCheckboxPicker, renderFlowForm } from './widgets/renderers.js';
+import { buildSessionFormSteps } from './session-form.js';
 import { getClaudeUsers, getClaudeGroups, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, saveSessionMeta, loadSessionMeta, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
@@ -132,158 +130,16 @@ function joinSession(client: Client, sessionId: string): void {
   });
 }
 
-function buildCreateSessionSteps(client: Client): FlowStep[] {
-  return [
-    {
-      id: 'name',
-      label: 'Session name',
-      createWidget: () => new TextInput({ prompt: 'Session name' }),
-      onResult: (e, acc) => { acc.name = e.value; },
-    },
-    {
-      id: 'runas',
-      label: 'Run as user',
-      createWidget: () => new TextInput({ prompt: `Run as user [${client.username}]`, initial: client.username }),
-      condition: () => isAdmin(client.username),
-      onResult: (e, acc) => { acc.runAsUser = e.value || client.username; },
-    },
-    {
-      id: 'server',
-      label: 'Server',
-      createWidget: () => {
-        const items = [{ label: 'local' }];
-        for (const r of config.remotes || []) {
-          items.push({ label: `${r.name} (${r.host})` });
-        }
-        return new ListPicker({ items, title: 'Select server' });
-      },
-      condition: () => isAdmin(client.username) && (config.remotes?.length ?? 0) > 0,
-      onResult: (e, acc) => {
-        if (e.index === 0) {
-          acc.remoteHost = undefined;
-        } else {
-          acc.remoteHost = (config.remotes || [])[e.index - 1]?.host;
-        }
-      },
-    },
-    {
-      id: 'workdir',
-      label: 'Working directory',
-      createWidget: (acc) => {
-        const items = [{ label: '~ (home directory)' }];
-        const history = dirScanner.getHistory();
-        const scanned = acc.remoteHost ? [] : dirScanner.scan();
-        const historySet = new Set(history);
-        for (const dir of history) items.push({ label: dir });
-        for (const dir of scanned) {
-          if (!historySet.has(dir)) items.push({ label: dir });
-        }
-        return new ComboInput({ items, prompt: 'Path', title: `Working directory${acc.remoteHost ? ` on ${acc.remoteHost}` : ''}` });
-      },
-      onResult: (e, acc) => {
-        const val = e.value || e.path;
-        if (!val || val === '~ (home directory)') {
-          acc.workingDir = undefined;
-        } else {
-          const resolved = val.startsWith('~') ? val.replace('~', process.env.HOME || '/root') : val;
-          acc.workingDir = resolved;
-        }
-      },
-    },
-    {
-      id: 'hidden',
-      label: 'Hidden session?',
-      createWidget: () => new YesNoPrompt({ prompt: 'Hidden session? (only you can see it)', defaultValue: false }),
-      onResult: (e, acc) => { acc.hidden = e.value; if (e.value) acc.public = false; },
-    },
-    {
-      id: 'viewonly',
-      label: 'View-only?',
-      createWidget: () => new YesNoPrompt({ prompt: 'View-only? (only you can type, others watch)', defaultValue: false }),
-      onResult: (e, acc) => { acc.viewOnly = e.value; },
-    },
-    {
-      id: 'public',
-      label: 'Public session?',
-      createWidget: () => new YesNoPrompt({ prompt: 'Public session? (anyone can join)', defaultValue: true }),
-      condition: (acc) => !acc.hidden,
-      onResult: (e, acc) => { acc.public = e.value; },
-    },
-    {
-      id: 'users',
-      label: 'Allowed users',
-      createWidget: () => {
-        const users = getClaudeUsers().filter(u => u !== client.username);
-        return new CheckboxPicker({
-          items: users.map(u => ({ label: u })),
-          title: 'Select users who can join',
-          hint: 'space=toggle, enter=done',
-          allowManualEntry: true,
-        });
-      },
-      condition: (acc) => !acc.hidden && !acc.public,
-      onResult: (e, acc) => {
-        if (e.type === 'submit') {
-          const users = getClaudeUsers().filter(u => u !== client.username);
-          acc.allowedUsers = e.selectedIndices.map((i: number) => users[i]).filter(Boolean);
-        }
-      },
-    },
-    {
-      id: 'groups',
-      label: 'Allowed groups',
-      createWidget: () => {
-        const groups = getClaudeGroups();
-        return new CheckboxPicker({
-          items: groups.map(g => ({ label: `${g.name} (${g.systemName})` })),
-          title: 'Select groups who can join',
-          hint: 'space=toggle, enter=done',
-          allowManualEntry: true,
-        });
-      },
-      condition: (acc) => !acc.hidden && !acc.public,
-      onResult: (e, acc) => {
-        if (e.type === 'submit') {
-          const groups = getClaudeGroups();
-          acc.allowedGroups = e.selectedIndices.map((i: number) => groups[i]?.name).filter(Boolean);
-        }
-      },
-    },
-    {
-      id: 'password',
-      label: 'Password',
-      createWidget: () => new TextInput({ prompt: 'Password (enter for none)', masked: true }),
-      onResult: (e, acc) => { acc.password = e.value || ''; },
-    },
-    {
-      id: 'dangermode',
-      label: 'Skip permissions?',
-      createWidget: () => new YesNoPrompt({ prompt: 'Skip permissions (--dangerously-skip-permissions)?', defaultValue: false }),
-      condition: () => isAdmin(client.username),
-      onResult: (e, acc) => { acc.dangerousSkipPermissions = e.value; },
-    },
-  ];
-}
-
-function renderCurrentStep(client: Client): void {
+function renderSessionForm(client: Client): void {
   const entry = creationFlows.get(client.id);
   if (!entry) return;
 
+  const summary = entry.flow.getFlowSummary();
   const state = entry.flow.getCurrentState();
-  const widget = state.widget;
+  const missing = entry.flow.getMode() !== 'legacy' ? entry.flow.getMissingRequired() : [];
+  const title = entry.isResume ? 'Resume session' : 'New session';
 
-  if (widget instanceof TextInput) {
-    client.write('\x1b[2J\x1b[H');
-    client.write(renderTextInput(widget.state));
-  } else if (widget instanceof YesNoPrompt) {
-    client.write(renderYesNo(widget.state));
-  } else if (widget instanceof ListPicker) {
-    client.write(renderListPicker(widget.state));
-  } else if (widget instanceof CheckboxPicker) {
-    client.write(renderCheckboxPicker(widget.state));
-  } else if (widget instanceof ComboInput) {
-    client.write(renderComboInput(widget.state));
-  }
+  client.write(renderFlowForm(title, summary, state.widget, state.stepId, missing.length > 0 ? missing : undefined));
 }
 
 function isAdmin(username: string): boolean {
@@ -291,11 +147,42 @@ function isAdmin(username: string): boolean {
 }
 
 function startNewSessionFlow(client: Client): void {
-  const flow = new FlowEngine(buildCreateSessionSteps(client));
+  const steps = buildSessionFormSteps('create', client, {}, {
+    getUsers: () => getClaudeUsers().filter(u => u !== client.username),
+    getGroups: () => getClaudeGroups(),
+    getServerItems: () => {
+      const items = [{ label: 'local' }];
+      for (const r of config.remotes || []) {
+        items.push({ label: `${r.name} (${r.host})` });
+      }
+      return items;
+    },
+    getDirItems: (acc) => {
+      const items: Array<{ label: string }> = [];
+      const history = dirScanner.getHistory();
+      const scanned = acc.remoteHost ? [] : dirScanner.scan();
+      const historySet = new Set(history);
+      for (const dir of history) items.push({ label: dir });
+      for (const dir of scanned) {
+        if (!historySet.has(dir)) items.push({ label: dir });
+      }
+      return items;
+    },
+  });
+
+  const initialState: Record<string, any> = {
+    _isAdmin: isAdmin(client.username),
+    _hasRemotes: (config.remotes?.length ?? 0) > 0,
+    _defaultUser: client.username,
+    _remotes: config.remotes || [],
+    _availableUsers: getClaudeUsers().filter(u => u !== client.username),
+    _availableGroups: getClaudeGroups(),
+  };
+
+  const flow = new FlowEngine(steps, initialState);
+  flow.setMode('navigate');
   creationFlows.set(client.id, { flow });
-  client.write('\x1b[2J\x1b[H');
-  client.write(`\x1b[1mNew session\x1b[0m (as ${client.username})\r\n\r\n`);
-  renderCurrentStep(client);
+  renderSessionForm(client);
 }
 
 
@@ -538,11 +425,42 @@ function handleResumeIdInput(client: Client, data: Buffer): void {
 }
 
 function launchDeepScan(client: Client): void {
-  const flow = new FlowEngine(buildCreateSessionSteps(client));
+  const steps = buildSessionFormSteps('create', client, {}, {
+    getUsers: () => getClaudeUsers().filter(u => u !== client.username),
+    getGroups: () => getClaudeGroups(),
+    getServerItems: () => {
+      const items = [{ label: 'local' }];
+      for (const r of config.remotes || []) {
+        items.push({ label: `${r.name} (${r.host})` });
+      }
+      return items;
+    },
+    getDirItems: (acc) => {
+      const items: Array<{ label: string }> = [];
+      const history = dirScanner.getHistory();
+      const scanned = acc.remoteHost ? [] : dirScanner.scan();
+      const historySet = new Set(history);
+      for (const dir of history) items.push({ label: dir });
+      for (const dir of scanned) {
+        if (!historySet.has(dir)) items.push({ label: dir });
+      }
+      return items;
+    },
+  });
+
+  const initialState: Record<string, any> = {
+    _isAdmin: isAdmin(client.username),
+    _hasRemotes: (config.remotes?.length ?? 0) > 0,
+    _defaultUser: client.username,
+    _remotes: config.remotes || [],
+    _availableUsers: getClaudeUsers().filter(u => u !== client.username),
+    _availableGroups: getClaudeGroups(),
+  };
+
+  const flow = new FlowEngine(steps, initialState);
+  flow.setMode('navigate');
   creationFlows.set(client.id, { flow, isResume: true });
-  client.write('\x1b[2J\x1b[H');
-  client.write(`\x1b[1mDeep scan — new session with Claude resume picker\x1b[0m (as ${client.username})\r\n\r\n`);
-  renderCurrentStep(client);
+  renderSessionForm(client);
 }
 
 function startExportFlow(client: Client): void {
@@ -666,10 +584,7 @@ function handleCreationInput(client: Client, data: Buffer): void {
   } else if (event.type === 'flow-cancelled') {
     creationFlows.delete(client.id);
     showLobby(client);
-  } else if (event.type === 'step-complete') {
-    renderCurrentStep(client);
   } else if (event.type === 'widget-event') {
-    // Handle tab-completion for ComboInput
     const widgetEvent = event.event;
     if (widgetEvent.type === 'tab') {
       const result = tabComplete(widgetEvent.partial || '~');
@@ -680,10 +595,10 @@ function handleCreationInput(client: Client, data: Buffer): void {
         }
       }
     }
-    renderCurrentStep(client);
+    renderSessionForm(client);
   } else {
-    // Navigate events — just re-render
-    renderCurrentStep(client);
+    // mode-change, none, step-complete — re-render
+    renderSessionForm(client);
   }
 }
 
