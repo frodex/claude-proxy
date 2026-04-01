@@ -173,8 +173,13 @@ function createWidget(
     }
 
     case 'combo': {
-      // Use simple text input with tab-completion — fits inline in the form
-      return new TextInput({ prompt: field.label, initial: initial ?? '', locked });
+      if (locked && initial) {
+        return new TextInput({ prompt: field.label, initial: String(initial), locked: true });
+      }
+      const items = context?.getDirItems
+        ? [{ label: '~ (home directory)' }, ...context.getDirItems(acc)]
+        : [{ label: '~ (home directory)' }];
+      return new ComboInput({ items, prompt: 'Path', title: field.label });
     }
 
     default:
