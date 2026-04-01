@@ -45,6 +45,16 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 [2026-03-29] tmux sessions use -S custom sockets with UGO permissions for access control
 [2026-03-29] inotify on /etc/group for reactive enforcement when group membership changes externally
 [2026-03-29] Proxy ACLs (hidden, public, allowedUsers) become UI hints that map to Unix groups
+[2026-04-01] Unified session screen: two-mode form interaction — yellow=field navigation (arrows move between fields), white=widget edit (Enter activates, arrows go to widget, Enter/Escape exits). Color shift signals mode.
+[2026-04-01] runas field locked on edit/restart/fork — can't change running process UID. Unlocking requires session export/migration to other user's home dir (future feature).
+[2026-04-01] Session form field config is YAML-driven — locked/visible/prefill per field per mode comes from config, not hardcoded. Widget creation and onResult stay in code.
+[2026-04-01] FlowStep gets displayValue callback (not _display_ keys) — each step defines how to render its completed value.
+[2026-04-01] workdir locked on edit/restart/fork — can't change working directory of existing session.
+[2026-04-01] Claude PID discovery must split cmd on space — `ps` reports `claude --resume` not bare `claude`. Always check `cmd.split(' ')[0]`.
+[2026-04-01] Locked fields in forms must not enter edit mode — Enter is ignored, user arrows past them.
+[2026-04-01] FlowEngine auto-advances cursor to next field after confirming (Enter in edit mode).
+[2026-04-01] Fork/edit always discover Claude session ID live from running process, not from stale metadata cache.
+[2026-04-01] Prefill values must be merged into FlowEngine initialState — otherwise displayValue reads empty accumulated state.
 
 ---
 
@@ -62,6 +72,18 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 ---
 
 ## Session History (most recent first)
+
+### 2026-04-01 — Unified Session Screen Implementation (15 tasks, 5 phases)
+- Phase 1: Widget field states (6 states + ANSI colors) + locked option on all widgets
+- Phase 2: FlowEngine two-mode navigation (navigate/edit), displayValue callback, validation + submit gate, full-form renderer
+- Phase 3: YAML-driven session form config (12 fields × 4 modes), predicate registry, widget factory, buildSessionFormSteps
+- Phase 4: Wired into app — creation, edit (Ctrl+B e), fork (Ctrl+B f), restart, fork-from-lobby all use unified SessionForm
+- Phase 5: API endpoints — session CRUD, restart/fork, supporting (remotes, users, groups)
+- Pre-implementation: questions to authoring agent, concerns doc, decision journal, YAML impact report
+- Key decisions: two-mode color signaling (yellow/white), runas/server/workdir locked on edit, YAML config for field metadata
+- 238 tests passing, 31 test files, clean build
+- PR: frodex/claude-proxy#1
+- Artifacts: v2 plan, decision journal, concerns doc, YAML impact report
 
 ### 2026-03-30 — Auth + UGO Security Implementation (Plans A, B, C)
 - Plan A complete: UserStore (SQLite), LinuxProvisioner, resolveUser — 34 tests
