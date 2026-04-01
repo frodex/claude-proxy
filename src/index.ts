@@ -7,7 +7,6 @@ import { SessionManager } from './session-manager.js';
 import { Lobby } from './lobby.js';
 import { DirScanner } from './dir-scanner.js';
 import { setScrollRegion } from './ansi.js';
-import { wrapCursor } from './interactive-menu.js';
 import { parseKey } from './widgets/keys.js';
 import { ListPicker } from './widgets/list-picker.js';
 import { TextInput } from './widgets/text-input.js';
@@ -82,11 +81,11 @@ function hashPassword(pw: string): string {
 
 const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
 
-const restartFlow: Map<string, { deadSessions: StoredSession[]; cursor: number }> = new Map();
+const restartFlows: Map<string, { picker: ListPicker; deadSessions: StoredSession[] }> = new Map();
 
 const resumeIdFlow: Map<string, { dead: StoredSession; buffer: string }> = new Map();
 
-const exportFlow: Map<string, { sessions: ExportableSession[]; selected: Set<number>; cursor: number }> = new Map();
+const exportFlows: Map<string, { picker: CheckboxPicker; sessions: ExportableSession[] }> = new Map();
 
 const transport = new SSHTransport({
   port: config.port,
@@ -384,86 +383,66 @@ function startResumeFlow(client: Client): void {
     s.access?.owner === client.username || s.runAsUser === client.username
   );
 
-  restartFlow.set(client.id, { deadSessions: dead, cursor: 0 });
-  renderRestartPicker(client);
-}
+  const items = dead.map((s, i) => {
+    const date = new Date(s.createdAt);
+    const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const owner = s.access?.owner || s.runAsUser;
+    const displayName = s.name.startsWith('resume-') ? `\x1b[38;5;245m${s.name}\x1b[0m` : s.name;
+    const vis = s.access?.viewOnly ? ' [view-only]' : '';
+    return { label: `${i + 1}. ${displayName}${vis} \x1b[38;5;245m${dateStr} @${owner}\x1b[0m` };
+  });
+  items.push({ label: '\x1b[36mD. Deep scan — browse all past Claude sessions\x1b[0m' });
 
-function renderRestartPicker(client: Client): void {
-  const flow = restartFlow.get(client.id);
-  if (!flow) return;
+  const picker = new ListPicker({
+    items,
+    title: 'Restart previous session:',
+    hint: 'arrows to select, enter to restart, D=deep scan, esc to cancel',
+  });
 
-  client.write('\x1b[2J\x1b[H');
-  client.write('\x1b[1mRestart previous session:\x1b[0m\r\n\r\n');
-
-  if (flow.deadSessions.length > 0) {
-    for (let i = 0; i < flow.deadSessions.length; i++) {
-      const s = flow.deadSessions[i];
-      const arrow = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
-      const date = new Date(s.createdAt);
-      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const owner = s.access?.owner || s.runAsUser;
-      const displayName = s.name.startsWith('resume-') ? `\x1b[38;5;245m${s.name}\x1b[0m` : s.name;
-      const vis = s.access?.viewOnly ? ' [view-only]' : '';
-      client.write(`  ${arrow} ${i + 1}. ${displayName}${vis} \x1b[38;5;245m${dateStr} @${owner}\x1b[0m\r\n`);
-    }
-    client.write('\r\n');
-  } else {
-    client.write('  No dead sessions found.\r\n\r\n');
-  }
-
-  // Deep scan is always the last option
-  const dsIdx = flow.deadSessions.length;
-  const dsCursor = flow.cursor === dsIdx ? '\x1b[33m>\x1b[0m' : ' ';
-  client.write(`  ${dsCursor} \x1b[36mD. Deep scan — browse all past Claude sessions\x1b[0m\r\n`);
-  client.write('\r\n  \x1b[90marrows to select, enter to restart, esc to cancel\x1b[0m\r\n');
+  restartFlows.set(client.id, { picker, deadSessions: dead });
+  client.write(renderListPicker(picker.state));
 }
 
 function handleRestartInput(client: Client, data: Buffer): void {
-  const flow = restartFlow.get(client.id);
+  const flow = restartFlows.get(client.id);
   if (!flow) return;
 
   const str = data.toString();
-  const totalOptions = flow.deadSessions.length + 1; // +1 for deep scan
 
-  if (str === '\x1b' && data.length === 1) {
-    restartFlow.delete(client.id);
-    showLobby(client);
-    return;
-  }
-
-  if (str === '\x1b[A' || str === '\x1bOA') {
-    flow.cursor = wrapCursor(flow.cursor, totalOptions, -1);
-    renderRestartPicker(client);
-    return;
-  }
-
-  if (str === '\x1b[B' || str === '\x1bOB') {
-    flow.cursor = wrapCursor(flow.cursor, totalOptions, 1);
-    renderRestartPicker(client);
-    return;
-  }
-
-  // D for deep scan shortcut
+  // D for deep scan shortcut (before delegating to picker)
   if (str === 'd' || str === 'D') {
-    restartFlow.delete(client.id);
+    restartFlows.delete(client.id);
     launchDeepScan(client);
     return;
   }
 
-  if (str === '\r' || str === '\n') {
+  const key = parseKey(data);
+  const event = flow.picker.handleKey(key);
+
+  if (event.type === 'cancel') {
+    restartFlows.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (event.type === 'select') {
     // Deep scan option (last item)
-    if (flow.cursor === flow.deadSessions.length) {
-      restartFlow.delete(client.id);
+    if (event.index === flow.deadSessions.length) {
+      restartFlows.delete(client.id);
       launchDeepScan(client);
       return;
     }
 
     // Prompt for Claude session ID before restarting
-    const dead = flow.deadSessions[flow.cursor];
-    restartFlow.delete(client.id);
+    const dead = flow.deadSessions[event.index];
+    restartFlows.delete(client.id);
     resumeIdFlow.set(client.id, { dead, buffer: dead.claudeSessionId || '' });
     renderResumeIdPrompt(client);
     return;
+  }
+
+  if (event.type === 'navigate') {
+    client.write(renderListPicker(flow.picker.state));
   }
 }
 
@@ -571,93 +550,72 @@ function startExportFlow(client: Client): void {
   if (sessions.length === 0) {
     client.write('\x1b[2J\x1b[H');
     client.write('  No sessions found to export.\r\n\r\n  Press any key...');
-    // One-key return using restartFlow hack
-    exportFlow.set(client.id, { sessions: [], selected: new Set(), cursor: 0 });
+    // One-key return using empty flow
+    exportFlows.set(client.id, {
+      picker: new CheckboxPicker({ items: [] }),
+      sessions: [],
+    });
     return;
   }
-  exportFlow.set(client.id, { sessions, selected: new Set(), cursor: 0 });
-  renderExportPicker(client);
-}
 
-function renderExportPicker(client: Client): void {
-  const flow = exportFlow.get(client.id);
-  if (!flow) return;
-
-  client.write('\x1b[2J\x1b[H');
-  client.write('  \x1b[1mExport sessions\x1b[0m\r\n');
-  client.write(`  \x1b[38;5;245mspace=toggle, a=select all, enter=export selected, esc=cancel\x1b[0m\r\n\r\n`);
-
-  for (let i = 0; i < flow.sessions.length; i++) {
-    const s = flow.sessions[i];
-    const arrow = i === flow.cursor ? '\x1b[33m>\x1b[0m' : ' ';
-    const checked = flow.selected.has(i) ? '\x1b[32m[x]\x1b[0m' : '[ ]';
+  const items = sessions.map(s => {
     const date = s.date ? s.date.toLocaleDateString() + ' ' + s.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
     const size = s.sizeBytes ? (s.sizeBytes > 1048576 ? `${(s.sizeBytes / 1048576).toFixed(1)}MB` : `${Math.round(s.sizeBytes / 1024)}KB`) : '';
     const msg = s.firstMessage ? `\x1b[36m${s.firstMessage}\x1b[0m` : `\x1b[38;5;245m(no message)\x1b[0m`;
-    client.write(`  ${arrow} ${checked} ${date} ${size} ${msg}\r\n`);
-  }
+    return { label: `${date} ${size} ${msg}` };
+  });
 
-  client.write(`\r\n  \x1b[38;5;245m${flow.selected.size} of ${flow.sessions.length} selected\x1b[0m\r\n`);
+  const picker = new CheckboxPicker({
+    items,
+    title: 'Export sessions',
+    hint: 'space=toggle, a=select all, enter=export selected, esc=cancel',
+  });
+
+  exportFlows.set(client.id, { picker, sessions });
+  client.write(renderCheckboxPicker(picker.state));
 }
 
 function handleExportInput(client: Client, data: Buffer): void {
-  const flow = exportFlow.get(client.id);
+  const flow = exportFlows.get(client.id);
   if (!flow) return;
   const str = data.toString();
 
   // No sessions — any key returns
   if (flow.sessions.length === 0) {
-    exportFlow.delete(client.id);
+    exportFlows.delete(client.id);
     showLobby(client);
     return;
   }
 
-  if (str === '\x1b' && data.length === 1) {
-    exportFlow.delete(client.id);
-    showLobby(client);
-    return;
-  }
-
-  if (str === '\x1b[A' || str === '\x1bOA') {
-    flow.cursor = wrapCursor(flow.cursor, flow.sessions.length, -1);
-    renderExportPicker(client);
-    return;
-  }
-
-  if (str === '\x1b[B' || str === '\x1bOB') {
-    flow.cursor = wrapCursor(flow.cursor, flow.sessions.length, 1);
-    renderExportPicker(client);
-    return;
-  }
-
-  // Space toggles
-  if (str === ' ') {
-    if (flow.selected.has(flow.cursor)) flow.selected.delete(flow.cursor);
-    else flow.selected.add(flow.cursor);
-    renderExportPicker(client);
-    return;
-  }
-
-  // A selects all
+  // 'a'/'A' toggle-all shortcut (not built into CheckboxPicker)
   if (str === 'a' || str === 'A') {
-    if (flow.selected.size === flow.sessions.length) {
-      flow.selected.clear();
+    const sel = flow.picker.state.selected;
+    if (sel.size === flow.sessions.length) {
+      sel.clear();
     } else {
-      for (let i = 0; i < flow.sessions.length; i++) flow.selected.add(i);
+      for (let i = 0; i < flow.sessions.length; i++) sel.add(i);
     }
-    renderExportPicker(client);
+    client.write(renderCheckboxPicker(flow.picker.state));
     return;
   }
 
-  // Enter exports
-  if (str === '\r' || str === '\n') {
-    if (flow.selected.size === 0) {
+  const key = parseKey(data);
+  const event = flow.picker.handleKey(key);
+
+  if (event.type === 'cancel') {
+    exportFlows.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (event.type === 'submit') {
+    if (event.selectedIndices.length === 0) {
       client.write('\r\n  No sessions selected.\r\n');
       return;
     }
 
-    const toExport = Array.from(flow.selected).map(i => flow.sessions[i]);
-    exportFlow.delete(client.id);
+    const toExport = event.selectedIndices.map(i => flow.sessions[i]);
+    exportFlows.delete(client.id);
 
     client.write('\x1b[2J\x1b[H');
     client.write(`  Exporting ${toExport.length} session(s)...\r\n`);
@@ -674,13 +632,24 @@ function handleExportInput(client: Client, data: Buffer): void {
       client.write(`\r\n  Press any key to return to lobby...\r\n`);
 
       // One-key return
-      exportFlow.set(client.id, { sessions: [], selected: new Set(), cursor: 0 });
+      exportFlows.set(client.id, {
+        picker: new CheckboxPicker({ items: [] }),
+        sessions: [],
+      });
     } catch (err: any) {
       client.write(`\r\n  \x1b[31mExport failed: ${err.message}\x1b[0m\r\n`);
       client.write(`\r\n  Press any key to return...\r\n`);
-      exportFlow.set(client.id, { sessions: [], selected: new Set(), cursor: 0 });
+      exportFlows.set(client.id, {
+        picker: new CheckboxPicker({ items: [] }),
+        sessions: [],
+      });
     }
     return;
+  }
+
+  // Navigate or toggle — re-render
+  if (event.type === 'navigate' || event.type === 'toggle') {
+    client.write(renderCheckboxPicker(flow.picker.state));
   }
 }
 
@@ -735,12 +704,12 @@ transport.onConnect((client) => {
       return;
     }
 
-    if (exportFlow.has(client.id)) {
+    if (exportFlows.has(client.id)) {
       handleExportInput(client, data);
       return;
     }
 
-    if (restartFlow.has(client.id)) {
+    if (restartFlows.has(client.id)) {
       handleRestartInput(client, data);
       return;
     }
