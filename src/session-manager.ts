@@ -595,17 +595,21 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Try to get the Claude session ID
+    // Always discover live — cache might be stale
+    let claudeId = discoverClaudeSessionId(sessionId, session.socketPath, session.runAsUser) ?? undefined;
     const meta = loadSessionMeta(sessionId);
-    let claudeId = meta?.claudeSessionId;
 
-    // If not stored, try to discover it now
+    // Fall back to stored if live discovery fails
     if (!claudeId) {
-      claudeId = discoverClaudeSessionId(sessionId, session.socketPath, session.runAsUser) ?? undefined;
-      if (claudeId && meta) {
-        meta.claudeSessionId = claudeId;
-        saveSessionMeta(sessionId, meta);
+      claudeId = meta?.claudeSessionId;
+    } else if (meta && meta.claudeSessionId !== claudeId) {
+      // Update stored ID if it changed
+      if (meta.claudeSessionId) {
+        if (!meta.pastClaudeSessionIds) meta.pastClaudeSessionIds = [];
+        meta.pastClaudeSessionIds.push(meta.claudeSessionId);
       }
+      meta.claudeSessionId = claudeId;
+      saveSessionMeta(sessionId, meta);
     }
 
     if (!claudeId) {
@@ -652,6 +656,7 @@ export class SessionManager {
     });
 
     const initialState: Record<string, any> = {
+      ...prefill,
       _isAdmin: client.username === 'root' || isUserInGroup(client.username, 'admins'),
       _hasRemotes: false,
       _defaultUser: client.username,
@@ -801,7 +806,8 @@ export class SessionManager {
       allowedGroups: session.access.allowedGroups,
       password: '',  // don't pre-fill password hash
       dangerousSkipPermissions: false,
-      claudeSessionId: loadSessionMeta(sessionId)?.claudeSessionId,
+      claudeSessionId: discoverClaudeSessionId(sessionId, session.socketPath, session.runAsUser)
+        || loadSessionMeta(sessionId)?.claudeSessionId,
     };
 
     const steps = buildSessionFormSteps('edit', client, prefill, {
@@ -810,6 +816,7 @@ export class SessionManager {
     });
 
     const initialState: Record<string, any> = {
+      ...prefill,
       _isAdmin: client.username === 'root' || isUserInGroup(client.username, 'admins'),
       _hasRemotes: false,
       _defaultUser: client.username,
