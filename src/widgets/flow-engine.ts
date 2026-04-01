@@ -240,10 +240,22 @@ export class FlowEngine {
         return { ...base, fieldState: 'completed' as const, value };
       }
       if (i === this.currentIndex) {
+        // Check if this field would be locked — show locked state, not active
+        const testWidget = step.createWidget(this.accumulated);
+        if (testWidget.state?.locked) {
+          const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+          return { ...base, fieldState: 'locked' as const, value, isCursor: true };
+        }
         return { ...base, fieldState: 'active' as const };
       }
-      // Show pre-filled/default value for pending fields
+      // Check if field would be locked
       const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+      try {
+        const testWidget = step.createWidget(this.accumulated);
+        if (testWidget.state?.locked) {
+          return { ...base, fieldState: 'locked' as const, value };
+        }
+      } catch {}
       return { ...base, fieldState: 'pending' as const, value: value || undefined };
     });
   }

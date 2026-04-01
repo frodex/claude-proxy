@@ -113,7 +113,8 @@ export function renderFlowForm(
     } else if (step.fieldState === 'grayed') {
       parts.push(`  ${color}${step.label}: ---${RESET}\r\n`);
     } else if (step.fieldState === 'locked') {
-      parts.push(`  ${color}\uD83D\uDD12 ${step.label}: ${step.value || ''}${RESET}\r\n`);
+      const arrow = (step as any).isCursor ? '\x1b[33m>\x1b[0m' : ' ';
+      parts.push(`${arrow} ${color}${step.label}: ${step.value || ''} \x1b[31m[LOCKED]\x1b[0m${RESET}\r\n`);
     } else {
       // pending
       const pendingVal = step.value ? `\x1b[2m${step.value}\x1b[0m` : `\x1b[2m[default]\x1b[0m`;
