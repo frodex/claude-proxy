@@ -23,6 +23,7 @@ export type FlowEvent =
   | { type: 'step-complete'; stepId: string; nextStepId: string }
   | { type: 'flow-complete'; results: Record<string, any> }
   | { type: 'flow-cancelled' }
+  | { type: 'mode-change'; mode: 'navigate' | 'edit' }
   | { type: 'widget-event'; event: any }
   | { type: 'none' };
 
@@ -32,6 +33,8 @@ export class FlowEngine {
   private accumulated: Record<string, any>;
   private currentWidget: Widget | null;
   private complete: boolean;
+  private mode: 'legacy' | 'navigate' | 'edit' = 'legacy';
+  private completedSteps: Set<number> = new Set();
 
   constructor(steps: FlowStep[], initialState?: Record<string, any>) {
     this.steps = steps;
@@ -43,7 +46,14 @@ export class FlowEngine {
   }
 
   handleKey(key: KeyEvent): FlowEvent {
-    if (this.complete || !this.currentWidget) return { type: 'none' };
+    if (this.complete) return { type: 'none' };
+    if (this.mode === 'legacy') return this.handleLegacyKey(key);
+    if (this.mode === 'navigate') return this.handleNavigateKey(key);
+    return this.handleEditKey(key);
+  }
+
+  private handleLegacyKey(key: KeyEvent): FlowEvent {
+    if (!this.currentWidget) return { type: 'none' };
 
     const event = this.currentWidget.handleKey(key);
 
@@ -70,6 +80,66 @@ export class FlowEngine {
     return { type: 'widget-event', event };
   }
 
+  private handleNavigateKey(key: KeyEvent): FlowEvent {
+    if (key.key === 'Up') {
+      const prev = this.findNextVisible(this.currentIndex, -1);
+      if (prev !== this.currentIndex) this.currentIndex = prev;
+      return { type: 'none' };
+    }
+    if (key.key === 'Down') {
+      const next = this.findNextVisible(this.currentIndex, 1);
+      if (next !== this.currentIndex) this.currentIndex = next;
+      return { type: 'none' };
+    }
+    if (key.key === 'Enter') {
+      const step = this.steps[this.currentIndex];
+      if (!step) return { type: 'none' };
+      if (step.condition && !step.condition(this.accumulated)) return { type: 'none' };
+      this.currentWidget = step.createWidget(this.accumulated);
+      this.mode = 'edit';
+      return { type: 'mode-change', mode: 'edit' };
+    }
+    if (key.key === 'Escape' || key.key === 'CtrlC') {
+      return { type: 'flow-cancelled' };
+    }
+    return { type: 'none' };
+  }
+
+  private handleEditKey(key: KeyEvent): FlowEvent {
+    if (!this.currentWidget) return { type: 'none' };
+    const event = this.currentWidget.handleKey(key);
+
+    if (event.type === 'cancel') {
+      // Cancel edit — return to navigate, discard changes
+      this.mode = 'navigate';
+      this.currentWidget = null;
+      return { type: 'mode-change', mode: 'navigate' };
+    }
+
+    if (event.type === 'submit' || event.type === 'select' || event.type === 'answer') {
+      const step = this.steps[this.currentIndex];
+      step.onResult(event, this.accumulated);
+      this.completedSteps.add(this.currentIndex);
+      this.mode = 'navigate';
+      this.currentWidget = null;
+      return { type: 'mode-change', mode: 'navigate' };
+    }
+
+    return { type: 'widget-event', event };
+  }
+
+  private findNextVisible(from: number, direction: 1 | -1): number {
+    let i = from + direction;
+    while (i >= 0 && i < this.steps.length) {
+      const step = this.steps[i];
+      if (!step.condition || step.condition(this.accumulated)) {
+        return i;
+      }
+      i += direction;
+    }
+    return from; // no valid step found, stay put
+  }
+
   getCurrentState(): { stepId: string; widget: Widget; progress: number } {
     const step = this.steps[this.currentIndex];
     return {
@@ -77,6 +147,19 @@ export class FlowEngine {
       widget: this.currentWidget!,
       progress: this.currentIndex / this.steps.length,
     };
+  }
+
+  setMode(mode: 'navigate' | 'edit'): void {
+    this.mode = mode;
+    if (mode === 'navigate') {
+      // Position cursor on first visible step
+      this.currentIndex = this.findNextVisible(-1, 1);
+      this.currentWidget = null;
+    }
+  }
+
+  getMode(): 'legacy' | 'navigate' | 'edit' {
+    return this.mode;
   }
 
   isComplete(): boolean {
@@ -88,20 +171,45 @@ export class FlowEngine {
   }
 
   getFlowSummary(): FlowStepSummary[] {
+    if (this.mode === 'legacy') {
+      return this.steps.map((step, i) => {
+        if (i < this.currentIndex) {
+          const value = step.displayValue
+            ? step.displayValue(this.accumulated)
+            : this.defaultDisplayValue(step.id);
+          return { id: step.id, label: step.label, fieldState: 'completed' as const, value };
+        }
+        if (i === this.currentIndex) {
+          return { id: step.id, label: step.label, fieldState: 'active' as const };
+        }
+        if (step.condition && !step.condition(this.accumulated)) {
+          return { id: step.id, label: step.label, fieldState: 'grayed' as const };
+        }
+        return { id: step.id, label: step.label, fieldState: 'pending' as const };
+      });
+    }
+
+    // Navigate/edit modes
     return this.steps.map((step, i) => {
-      if (i < this.currentIndex) {
-        const value = step.displayValue
-          ? step.displayValue(this.accumulated)
-          : this.defaultDisplayValue(step.id);
-        return { id: step.id, label: step.label, fieldState: 'completed' as const, value };
+      const base = { id: step.id, label: step.label };
+      if (step.condition && !step.condition(this.accumulated)) {
+        return { ...base, fieldState: 'grayed' as const };
+      }
+      if (i === this.currentIndex && this.mode === 'edit') {
+        if (this.completedSteps.has(i)) {
+          const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+          return { ...base, fieldState: 'editing' as const, value };
+        }
+        return { ...base, fieldState: 'editing' as const };
+      }
+      if (this.completedSteps.has(i)) {
+        const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+        return { ...base, fieldState: 'completed' as const, value };
       }
       if (i === this.currentIndex) {
-        return { id: step.id, label: step.label, fieldState: 'active' as const };
+        return { ...base, fieldState: 'active' as const };
       }
-      if (step.condition && !step.condition(this.accumulated)) {
-        return { id: step.id, label: step.label, fieldState: 'grayed' as const };
-      }
-      return { id: step.id, label: step.label, fieldState: 'pending' as const };
+      return { ...base, fieldState: 'pending' as const };
     });
   }
 

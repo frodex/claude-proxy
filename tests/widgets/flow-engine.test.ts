@@ -163,6 +163,106 @@ test('getFlowSummary marks skipped conditional steps as grayed', () => {
   expect(summary[2].fieldState).toBe('pending');
 });
 
+// === Navigate/Edit mode tests ===
+
+test('navigate mode: arrow down moves to next visible field', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  flow.setMode('navigate');
+  const summary1 = flow.getFlowSummary();
+  expect(summary1[0].fieldState).toBe('active'); // cursor on name
+
+  flow.handleKey(parseKey(Buffer.from('\x1b[B'))); // Down
+  const summary2 = flow.getFlowSummary();
+  expect(summary2[0].fieldState).toBe('pending');
+  expect(summary2[1].fieldState).toBe('active'); // cursor moved to hidden
+});
+
+test('navigate mode: arrow up moves to previous visible field', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  flow.setMode('navigate');
+  flow.handleKey(parseKey(Buffer.from('\x1b[B'))); // Down to hidden
+  flow.handleKey(parseKey(Buffer.from('\x1b[A'))); // Up back to name
+  const summary = flow.getFlowSummary();
+  expect(summary[0].fieldState).toBe('active');
+});
+
+test('navigate mode: Enter switches to edit mode', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  flow.setMode('navigate');
+  const event = flow.handleKey(parseKey(Buffer.from('\r'))); // Enter
+  expect(flow.getMode()).toBe('edit');
+  expect(event.type).toBe('mode-change');
+});
+
+test('edit mode: keys go to widget, Enter confirms and returns to navigate', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  flow.setMode('navigate');
+  flow.handleKey(parseKey(Buffer.from('\r'))); // Enter edit mode on 'name'
+
+  // Type into widget
+  flow.handleKey(parseKey(Buffer.from('test-session')));
+  const state = flow.getCurrentState();
+  expect(state.widget.state.buffer).toBe('test-session');
+
+  // Enter confirms — back to navigate mode, field is completed
+  const event = flow.handleKey(parseKey(Buffer.from('\r')));
+  expect(flow.getMode()).toBe('navigate');
+  const summary = flow.getFlowSummary();
+  expect(summary[0].fieldState).toBe('completed');
+});
+
+test('edit mode: Escape cancels edit and returns to navigate without saving', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  flow.setMode('navigate');
+  flow.handleKey(parseKey(Buffer.from('\r'))); // Enter edit on 'name'
+  flow.handleKey(parseKey(Buffer.from('test'))); // type
+  flow.handleKey(parseKey(Buffer.from('\x1b'))); // Escape — cancel edit
+
+  expect(flow.getMode()).toBe('navigate');
+  // name should NOT be completed since we cancelled
+  const summary = flow.getFlowSummary();
+  expect(summary[0].fieldState).toBe('active');
+});
+
+test('navigate mode: arrow skips grayed (conditional false) fields', () => {
+  const conditionalFlow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Name',
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+    {
+      id: 'admin-only',
+      label: 'Admin',
+      createWidget: () => new YesNoPrompt({ prompt: 'Admin?', defaultValue: false }),
+      condition: () => false,
+      onResult: (e, acc) => { acc.admin = e.value; },
+    },
+    {
+      id: 'final',
+      label: 'Final',
+      createWidget: () => new YesNoPrompt({ prompt: 'Done?', defaultValue: true }),
+      onResult: (e, acc) => { acc.done = e.value; },
+    },
+  ];
+
+  const flow = new FlowEngine(conditionalFlow);
+  flow.setMode('navigate');
+  flow.handleKey(parseKey(Buffer.from('\x1b[B'))); // Down — should skip admin, land on final
+  const summary = flow.getFlowSummary();
+  expect(summary[2].fieldState).toBe('active');
+});
+
+test('legacy mode (no setMode call) works exactly as before', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  // No setMode call — legacy mode
+  flow.handleKey(parseKey(Buffer.from('test')));
+  const event = flow.handleKey(parseKey(Buffer.from('\r'))); // submit name
+  expect(event.type).toBe('step-complete');
+  expect(flow.getCurrentState().stepId).toBe('hidden');
+});
+
 test('isComplete returns true after all steps', () => {
   const flow = new FlowEngine(twoStepFlow);
   expect(flow.isComplete()).toBe(false);
