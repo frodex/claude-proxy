@@ -50,3 +50,11 @@ test('other keys return none', () => {
   const event = yn.handleKey(parseKey(Buffer.from('x')));
   expect(event).toEqual({ type: 'none' });
 });
+
+test('locked prompt ignores y/n/enter but allows cancel', () => {
+  const yn = new YesNoPrompt({ prompt: 'Hidden?', defaultValue: false, locked: true });
+  expect(yn.handleKey(parseKey(Buffer.from('y'))).type).toBe('none');
+  expect(yn.handleKey(parseKey(Buffer.from('n'))).type).toBe('none');
+  expect(yn.handleKey(parseKey(Buffer.from('\r'))).type).toBe('none');
+  expect(yn.handleKey(parseKey(Buffer.from('\x1b'))).type).toBe('cancel');
+});

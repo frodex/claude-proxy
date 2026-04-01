@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { parse } from 'yaml';
 import type { FlowStep } from './widgets/flow-engine.js';
 import type { Client } from './types.js';
@@ -39,7 +40,8 @@ let _cachedConfig: SessionFormConfig | null = null;
 
 export function loadSessionFormConfig(): SessionFormConfig {
   if (_cachedConfig) return _cachedConfig;
-  const configPath = resolve('src/session-form.yaml');
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const configPath = resolve(__dirname, 'session-form.yaml');
   const raw = readFileSync(configPath, 'utf-8');
   _cachedConfig = parse(raw) as SessionFormConfig;
   return _cachedConfig;
