@@ -1,0 +1,124 @@
+# Session form field definitions
+# Each field defines its behavior per mode (create/edit/restart/fork)
+# Widget creation and onResult logic are in code — this config controls
+# visibility, locking, prefill, and field metadata.
+
+fields:
+  - id: name
+    label: Session name
+    widget: text
+    required: true
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: fork-name }
+
+  - id: runas
+    label: Run as user
+    widget: text
+    condition: admin-only
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: true, prefill: true }
+      restart: { visible: true, locked: true, prefill: true }
+      fork:    { visible: true, locked: true, prefill: true }
+
+  - id: server
+    label: Server
+    widget: list
+    condition: admin-with-remotes
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: true, prefill: true }
+      restart: { visible: true, locked: true, prefill: true }
+      fork:    { visible: true, locked: true, prefill: true }
+
+  - id: workdir
+    label: Working directory
+    widget: combo
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: true, prefill: true }
+      restart: { visible: true, locked: true, prefill: true }
+      fork:    { visible: true, locked: true, prefill: true }
+
+  - id: hidden
+    label: Hidden session?
+    widget: yesno
+    default: false
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
+
+  - id: viewonly
+    label: View-only?
+    widget: yesno
+    default: false
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
+
+  - id: public
+    label: Public session?
+    widget: yesno
+    default: true
+    condition: not-hidden
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
+
+  - id: users
+    label: Allowed users
+    widget: checkbox
+    condition: not-hidden-and-not-public
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
+
+  - id: groups
+    label: Allowed groups
+    widget: checkbox
+    condition: not-hidden-and-not-public
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
+
+  - id: password
+    label: Password
+    widget: text-masked
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false }
+
+  - id: dangermode
+    label: Skip permissions?
+    widget: yesno
+    default: false
+    condition: admin-only
+    modes:
+      create:  { visible: true, locked: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }
+
+  - id: claudeSessionId
+    label: Claude session ID
+    widget: text
+    modes:
+      create:  { visible: false }
+      edit:    { visible: true, locked: false, prefill: true }
+      restart: { visible: true, locked: false, prefill: true }
+      fork:    { visible: true, locked: true, prefill: true }
