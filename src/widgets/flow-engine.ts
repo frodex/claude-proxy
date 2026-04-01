@@ -123,6 +123,9 @@ export class FlowEngine {
       const step = this.steps[this.currentIndex];
       step.onResult(event, this.accumulated);
       this.completedSteps.add(this.currentIndex);
+      // Auto-advance to next visible field
+      const next = this.findNextVisible(this.currentIndex, 1);
+      if (next !== this.currentIndex) this.currentIndex = next;
       this.mode = 'navigate';
       this.currentWidget = null;
       return { type: 'mode-change', mode: 'navigate' };
