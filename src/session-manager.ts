@@ -5,14 +5,14 @@ import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
 import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
-import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
+import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames, discoverClaudeSessionId } from './session-store.js';
-import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups } from './user-utils.js';
+import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups, isUserInGroup } from './user-utils.js';
 import { parseKey } from './widgets/keys.js';
-import { CheckboxPicker } from './widgets/checkbox-picker.js';
-import { TextInput } from './widgets/text-input.js';
-import { renderCheckboxPicker as renderCheckboxPickerWidget, renderTextInput } from './widgets/renderers.js';
+import { renderFlowForm } from './widgets/renderers.js';
+import { buildSessionFormSteps } from './session-form.js';
+import { FlowEngine } from './widgets/flow-engine.js';
 import type { Client, Session, SessionAccess } from './types.js';
 import type { SocketManager } from './ugo/socket-manager.js';
 import type { GroupWatcher, SessionInfo } from './ugo/group-watcher.js';
@@ -34,12 +34,12 @@ interface ManagedSession extends Session {
   scrollbackViewers: Map<string, ScrollbackViewer>;
   dumpMode: Set<string>;
   helpMenu: Map<string, number>;
-  editMenu: Map<string, { step: string; cursor: number; buffer?: string; pickerCursor?: number; pickerItems?: string[]; checkboxWidget?: CheckboxPicker; textWidget?: TextInput }>;
   onClientDetach?: (client: Client) => void;
 }
 
 export class SessionManager {
   private sessions: Map<string, ManagedSession> = new Map();
+  private editFlows = new Map<string, { flow: FlowEngine; sessionId: string }>();
   private options: SessionManagerOptions;
   private onSessionEndCallback?: (sessionId: string) => void;
   private socketManager?: SocketManager;
@@ -196,7 +196,6 @@ export class SessionManager {
         scrollbackViewers: new Map(),
         dumpMode: new Set(),
         helpMenu: new Map(),
-        editMenu: new Map(),
       };
 
       this.sessions.set(id, session);
@@ -276,7 +275,6 @@ export class SessionManager {
       scrollbackViewers: new Map(),
       dumpMode: new Set(),
       helpMenu: new Map(),
-      editMenu: new Map(),
     };
 
     // Persist metadata for restart recovery
@@ -408,279 +406,24 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Edit session settings menu
-    if (session.editMenu.has(client.id)) {
-      const str = data.toString();
-      const edit = session.editMenu.get(client.id)!;
+    // Edit session settings (SessionForm)
+    if (this.editFlows.has(client.id)) {
+      const entry = this.editFlows.get(client.id)!;
+      const key = parseKey(data);
+      const event = entry.flow.handleKey(key);
 
-      // Sub-state: password input (TextInput widget)
-      if (edit.step === 'password') {
-        if (!edit.textWidget) edit.textWidget = new TextInput({ prompt: '  Enter new password', masked: true });
-        const event = edit.textWidget.handleKey(parseKey(data));
-        if (event.type === 'submit') {
-          if (event.value.length > 0) {
-            session.access.passwordHash = createHash('sha256').update(event.value).digest('hex');
-          }
-          edit.step = 'menu'; edit.textWidget = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'cancel') {
-          edit.step = 'menu'; edit.textWidget = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        // Re-render password input
-        client.write('\x1b[2J\x1b[H' + renderTextInput(edit.textWidget.state) + '\r\n');
-        return;
-      }
-
-      // Sub-state: edit allowed users (CheckboxPicker widget)
-      if (edit.step === 'users') {
-        if (!edit.checkboxWidget) {
-          edit.pickerItems = getClaudeUsers().filter(u => u !== session.access.owner);
-          const selected = new Set<number>();
-          edit.pickerItems.forEach((u, i) => { if (session.access.allowedUsers.includes(u)) selected.add(i); });
-          edit.checkboxWidget = new CheckboxPicker({
-            items: edit.pickerItems.map(u => ({ label: u })),
-            title: 'Allowed users',
-            hint: 'empty = everyone can join',
-            allowManualEntry: true,
-            initialSelected: selected,
-          });
-        }
-        const event = edit.checkboxWidget.handleKey(parseKey(data));
-        if (event.type === 'submit') {
-          session.access.allowedUsers = event.selectedIndices.map(i => edit.pickerItems![i]);
-          edit.step = 'menu'; edit.checkboxWidget = undefined; edit.pickerItems = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'cancel') {
-          edit.step = 'menu'; edit.checkboxWidget = undefined; edit.pickerItems = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'addEntry') {
-          const name = event.value;
-          if (!edit.pickerItems!.includes(name)) {
-            edit.pickerItems!.push(name);
-            // Recreate widget with updated items, preserving selections + selecting new entry
-            const selected = new Set(edit.checkboxWidget.state.selected);
-            selected.add(edit.pickerItems!.length - 1);
-            edit.checkboxWidget = new CheckboxPicker({
-              items: edit.pickerItems!.map(u => ({ label: u })),
-              title: 'Allowed users',
-              hint: 'empty = everyone can join',
-              allowManualEntry: true,
-              initialSelected: selected,
-            });
-          }
-        }
-        client.write(renderCheckboxPickerWidget(edit.checkboxWidget.state));
-        return;
-      }
-
-      // Sub-state: edit allowed groups (CheckboxPicker widget)
-      if (edit.step === 'groups') {
-        if (!edit.checkboxWidget) {
-          edit.pickerItems = getClaudeGroups().map(g => g.name);
-          const selected = new Set<number>();
-          edit.pickerItems.forEach((g, i) => { if (session.access.allowedGroups.includes(g)) selected.add(i); });
-          edit.checkboxWidget = new CheckboxPicker({
-            items: edit.pickerItems.map(g => ({ label: g })),
-            title: 'Allowed groups',
-            hint: 'cp- prefix added automatically',
-            allowManualEntry: true,
-            initialSelected: selected,
-          });
-        }
-        const event = edit.checkboxWidget.handleKey(parseKey(data));
-        if (event.type === 'submit') {
-          session.access.allowedGroups = event.selectedIndices.map(i => edit.pickerItems![i]);
-          edit.step = 'menu'; edit.checkboxWidget = undefined; edit.pickerItems = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'cancel') {
-          edit.step = 'menu'; edit.checkboxWidget = undefined; edit.pickerItems = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'addEntry') {
-          const name = event.value.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
-          if (name && !edit.pickerItems!.includes(name)) {
-            edit.pickerItems!.push(name);
-            const selected = new Set(edit.checkboxWidget.state.selected);
-            selected.add(edit.pickerItems!.length - 1);
-            edit.checkboxWidget = new CheckboxPicker({
-              items: edit.pickerItems!.map(g => ({ label: g })),
-              title: 'Allowed groups',
-              hint: 'cp- prefix added automatically',
-              allowManualEntry: true,
-              initialSelected: selected,
-            });
-          }
-        }
-        client.write(renderCheckboxPickerWidget(edit.checkboxWidget.state));
-        return;
-      }
-
-      // Sub-state: edit admins (CheckboxPicker widget)
-      if (edit.step === 'admins') {
-        if (!session.access.admins) session.access.admins = [];
-        if (!edit.checkboxWidget) {
-          edit.pickerItems = getClaudeUsers().filter(u => u !== session.access.owner);
-          const selected = new Set<number>();
-          edit.pickerItems.forEach((u, i) => { if (session.access.admins!.includes(u)) selected.add(i); });
-          edit.checkboxWidget = new CheckboxPicker({
-            items: edit.pickerItems.map(u => ({ label: u })),
-            title: 'Session admins',
-            hint: 'users in cp-admins group are always admins',
-            allowManualEntry: true,
-            initialSelected: selected,
-          });
-        }
-        const event = edit.checkboxWidget.handleKey(parseKey(data));
-        if (event.type === 'submit') {
-          session.access.admins = event.selectedIndices.map(i => edit.pickerItems![i]);
-          edit.step = 'menu'; edit.checkboxWidget = undefined; edit.pickerItems = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'cancel') {
-          edit.step = 'menu'; edit.checkboxWidget = undefined; edit.pickerItems = undefined;
-          this.renderEditMenu(sessionId, client);
-          return;
-        }
-        if (event.type === 'addEntry') {
-          const name = event.value;
-          if (!edit.pickerItems!.includes(name)) {
-            edit.pickerItems!.push(name);
-            const selected = new Set(edit.checkboxWidget.state.selected);
-            selected.add(edit.pickerItems!.length - 1);
-            edit.checkboxWidget = new CheckboxPicker({
-              items: edit.pickerItems!.map(u => ({ label: u })),
-              title: 'Session admins',
-              hint: 'users in cp-admins group are always admins',
-              allowManualEntry: true,
-              initialSelected: selected,
-            });
-          }
-        }
-        client.write(renderCheckboxPickerWidget(edit.checkboxWidget.state));
-        return;
-      }
-
-      // Main menu state
-      const sections = this.buildEditSections(session.access);
-
-      if (str === '\x1b' && data.length === 1) {
-        session.editMenu.delete(client.id);
+      if (event.type === 'flow-complete') {
+        this.editFlows.delete(client.id);
+        this.applyEditResults(entry.sessionId, event.results, client);
         client.write('\x1b[2J\x1b[H');
         session.pty.attach(client);
-        return;
+      } else if (event.type === 'flow-cancelled') {
+        this.editFlows.delete(client.id);
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+      } else {
+        this.renderEditForm(client);
       }
-      if (str === '\x1b[A' || str === '\x1bOA') {
-        edit.cursor = nextSelectable(sections, edit.cursor, -1);
-        this.renderEditMenu(sessionId, client);
-        return;
-      }
-      if (str === '\x1b[B' || str === '\x1bOB') {
-        edit.cursor = nextSelectable(sections, edit.cursor, 1);
-        this.renderEditMenu(sessionId, client);
-        return;
-      }
-
-      const doAction = (action: string | null) => {
-        if (!action) return false;
-        if (action === 'save' || action === 'cancel') {
-          session.editMenu.delete(client.id);
-          if (action === 'save') {
-            saveSessionMeta(sessionId, {
-              tmuxId: sessionId, name: session.name, runAsUser: session.runAsUser,
-              createdAt: session.createdAt.toISOString(), access: session.access,
-            });
-            console.log(`[edit] ${client.username} updated settings for "${session.name}"`);
-          }
-          client.write('\x1b[2J\x1b[H');
-          session.pty.attach(client);
-          return true;
-        }
-        if (action === 'toggle:hidden') { session.access.hidden = !session.access.hidden; this.renderEditMenu(sessionId, client); return true; }
-        if (action === 'toggle:viewOnly') { session.access.viewOnly = !session.access.viewOnly; this.renderEditMenu(sessionId, client); return true; }
-        if (action === 'toggle:password') {
-          if (session.access.passwordHash) {
-            session.access.passwordHash = null;
-            this.renderEditMenu(sessionId, client);
-          } else {
-            edit.step = 'password'; edit.buffer = '';
-            client.write('\x1b[2J\x1b[H');
-            client.write('  Enter new password: ');
-          }
-          return true;
-        }
-        if (action === 'setPassword') {
-          edit.step = 'password';
-          edit.textWidget = new TextInput({ prompt: '  Enter new password', masked: true });
-          client.write('\x1b[2J\x1b[H' + renderTextInput(edit.textWidget.state) + '\r\n');
-          return true;
-        }
-        if (action === 'editUsers') {
-          edit.step = 'users';
-          edit.pickerItems = getClaudeUsers().filter(u => u !== session.access.owner);
-          const userSelected = new Set<number>();
-          edit.pickerItems.forEach((u, i) => { if (session.access.allowedUsers.includes(u)) userSelected.add(i); });
-          edit.checkboxWidget = new CheckboxPicker({
-            items: edit.pickerItems.map(u => ({ label: u })),
-            title: 'Allowed users',
-            hint: 'empty = everyone can join',
-            allowManualEntry: true,
-            initialSelected: userSelected,
-          });
-          client.write(renderCheckboxPickerWidget(edit.checkboxWidget.state));
-          return true;
-        }
-        if (action === 'editGroups') {
-          edit.step = 'groups';
-          edit.pickerItems = getClaudeGroups().map(g => g.name);
-          const groupSelected = new Set<number>();
-          edit.pickerItems.forEach((g, i) => { if (session.access.allowedGroups.includes(g)) groupSelected.add(i); });
-          edit.checkboxWidget = new CheckboxPicker({
-            items: edit.pickerItems.map(g => ({ label: g })),
-            title: 'Allowed groups',
-            hint: 'cp- prefix added automatically',
-            allowManualEntry: true,
-            initialSelected: groupSelected,
-          });
-          client.write(renderCheckboxPickerWidget(edit.checkboxWidget.state));
-          return true;
-        }
-        if (action === 'editAdmins') {
-          edit.step = 'admins';
-          if (!session.access.admins) session.access.admins = [];
-          edit.pickerItems = getClaudeUsers().filter(u => u !== session.access.owner);
-          const adminSelected = new Set<number>();
-          edit.pickerItems.forEach((u, i) => { if (session.access.admins!.includes(u)) adminSelected.add(i); });
-          edit.checkboxWidget = new CheckboxPicker({
-            items: edit.pickerItems.map(u => ({ label: u })),
-            title: 'Session admins',
-            hint: 'users in cp-admins group are always admins',
-            allowManualEntry: true,
-            initialSelected: adminSelected,
-          });
-          client.write(renderCheckboxPickerWidget(edit.checkboxWidget.state));
-          return true;
-        }
-        return false;
-      };
-
-      if (str === '\r' || str === '\n' || str === ' ') {
-        if (doAction(getActionAtCursor(sections, edit.cursor))) return;
-      }
-
-      const found = findItemByKey(sections, str);
-      if (found) { if (doAction(found.action)) return; }
       return;
     }
 
@@ -933,67 +676,10 @@ export class SessionManager {
     }
   }
 
-  private buildEditSections(access: SessionAccess): MenuSection[] {
-    const items: MenuItem[] = [
-      { label: `Hidden: ${access.hidden ? 'YES' : 'no'}`, key: '1', action: 'toggle:hidden' },
-      { label: `View-only: ${access.viewOnly ? 'YES' : 'no'}`, key: '2', action: 'toggle:viewOnly' },
-      { label: `Require password: ${access.passwordHash ? 'YES' : 'no'}`, key: '3', action: 'toggle:password' },
-    ];
-
-    // Password value — only editable when password is on
-    if (access.passwordHash) {
-      items.push({ label: 'Change password...', key: '4', action: 'setPassword' });
-    } else {
-      items.push({ label: 'Password: off', action: 'none', disabled: true });
-    }
-
-    // Allowed users — editable when not hidden
-    if (!access.hidden) {
-      const userList = access.allowedUsers.length > 0 ? access.allowedUsers.join(', ') : 'everyone';
-      items.push({ label: `Allowed users: ${userList}`, key: '5', action: 'editUsers' });
-      const groupList = access.allowedGroups.length > 0 ? access.allowedGroups.join(', ') : 'all';
-      items.push({ label: `Allowed groups: ${groupList}`, key: '6', action: 'editGroups' });
-    } else {
-      items.push({ label: 'Allowed users: hidden (owner only)', action: 'none', disabled: true });
-      items.push({ label: 'Allowed groups: hidden (owner only)', action: 'none', disabled: true });
-    }
-
-    // Session admins — always editable
-    const adminList = (access.admins?.length ?? 0) > 0 ? access.admins!.join(', ') : 'none';
-    items.push({ label: `Session admins: ${adminList}`, key: '7', action: 'editAdmins' });
-
-    return [{
-      title: `Session settings (owner: ${access.owner})`,
-      items,
-    }, {
-      items: [
-        { label: 'Save and return', action: 'save' },
-        { label: 'Cancel', key: 'esc', action: 'cancel' },
-      ],
-    }];
-  }
-
-  private renderEditMenu(sessionId: string, client: Client): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    const edit = session.editMenu.get(client.id);
-    if (!edit) return;
-
-    const sections = this.buildEditSections(session.access);
-    client.write(renderMenu({
-      title: 'Edit session settings',
-      sections,
-      footer: 'arrows to navigate, space/enter to toggle, esc to cancel',
-      cursor: edit.cursor,
-    }));
-  }
-
-
   private startEditSession(sessionId: string, client: Client): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Only owner, session admins, or cp-admins can edit
     if (!canUserEditSession(client.username, session.access)) {
       client.write('\r\n  Only the session owner or admins can edit settings.\r\n');
       setTimeout(() => {
@@ -1004,8 +690,79 @@ export class SessionManager {
     }
 
     session.pty.detach(client);
-    session.editMenu.set(client.id, { step: 'menu', cursor: 0 });
-    this.renderEditMenu(sessionId, client);
+
+    const prefill: Record<string, any> = {
+      name: session.name,
+      runAsUser: session.runAsUser,
+      remoteHost: session.remoteHost,
+      workingDir: session.workingDir,
+      hidden: session.access.hidden,
+      viewOnly: session.access.viewOnly,
+      public: session.access.public,
+      allowedUsers: session.access.allowedUsers,
+      allowedGroups: session.access.allowedGroups,
+      password: '',  // don't pre-fill password hash
+      dangerousSkipPermissions: false,
+      claudeSessionId: loadSessionMeta(sessionId)?.claudeSessionId,
+    };
+
+    const steps = buildSessionFormSteps('edit', client, prefill, {
+      getUsers: () => getClaudeUsers().filter(u => u !== session.access.owner),
+      getGroups: () => getClaudeGroups(),
+    });
+
+    const initialState: Record<string, any> = {
+      _isAdmin: client.username === 'root' || isUserInGroup(client.username, 'admins'),
+      _hasRemotes: false,
+      _defaultUser: client.username,
+    };
+
+    const flow = new FlowEngine(steps, initialState);
+    flow.setMode('navigate');
+    this.editFlows.set(client.id, { flow, sessionId });
+    this.renderEditForm(client);
+  }
+
+  private renderEditForm(client: Client): void {
+    const entry = this.editFlows.get(client.id);
+    if (!entry) return;
+    const summary = entry.flow.getFlowSummary();
+    const state = entry.flow.getCurrentState();
+    const missing = entry.flow.getMissingRequired();
+    client.write(renderFlowForm('Edit session', summary, state.widget, state.stepId, missing.length > 0 ? missing : undefined));
+  }
+
+  private applyEditResults(sessionId: string, results: Record<string, any>, client: Client): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    if (results.name !== undefined) session.name = results.name;
+    if (results.hidden !== undefined) session.access.hidden = results.hidden;
+    if (results.viewOnly !== undefined) session.access.viewOnly = results.viewOnly;
+    if (results.public !== undefined) session.access.public = results.public;
+    if (results.allowedUsers !== undefined) session.access.allowedUsers = results.allowedUsers;
+    if (results.allowedGroups !== undefined) session.access.allowedGroups = results.allowedGroups;
+    if (results.password) {
+      session.access.passwordHash = createHash('sha256').update(results.password).digest('hex');
+    }
+    if (results.claudeSessionId) {
+      const meta = loadSessionMeta(sessionId);
+      if (meta) {
+        meta.claudeSessionId = results.claudeSessionId;
+        saveSessionMeta(sessionId, meta);
+      }
+    }
+
+    // Save metadata
+    saveSessionMeta(sessionId, {
+      tmuxId: sessionId,
+      name: session.name,
+      runAsUser: session.runAsUser,
+      createdAt: session.createdAt.toISOString(),
+      access: session.access,
+    });
+
+    console.log(`[edit] ${client.username} updated settings for "${session.name}"`);
   }
 
   private updateTitle(sessionId: string): void {
