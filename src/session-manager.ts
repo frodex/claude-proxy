@@ -877,20 +877,21 @@ export class SessionManager {
     }
     const forkName = `${baseName}-fork_${String(forkNum).padStart(2, '0')}`;
 
-    client.write('\x1b[2J\x1b[H');
-    client.write(`\r\n  \x1b[1mForking session:\x1b[0m ${session.name}\r\n`);
-    client.write(`  \x1b[90mClaude session: ${claudeId}\x1b[0m\r\n`);
-    client.write(`  \x1b[90mNew session: ${forkName}\x1b[0m\r\n\r\n`);
-    client.write('  Creating fork...\r\n');
-
     try {
-      // Leave current session
-      this.leaveSession(sessionId, client);
+      // Create fork in background — user stays in current session
+      // Use a fake client for the fork (no one is attached initially)
+      const forkClient: Client = {
+        id: `fork-${Date.now()}`,
+        username: client.username,
+        transport: client.transport,
+        termSize: client.termSize,
+        write: () => {},  // no output — nobody is watching yet
+        lastKeystroke: Date.now(),
+      };
 
-      // Create new session with --resume <id> --fork-session
       const forkedSession = this.createSession(
         forkName,
-        client,
+        forkClient,
         session.runAsUser,
         'claude',
         session.access,
@@ -899,6 +900,9 @@ export class SessionManager {
         session.workingDir,
       );
 
+      // Immediately detach the fake client
+      this.leaveSession(forkedSession.id, forkClient);
+
       // Store the source session ID in the fork's metadata
       const forkMeta = loadSessionMeta(forkedSession.id);
       if (forkMeta) {
@@ -906,12 +910,25 @@ export class SessionManager {
         saveSessionMeta(forkedSession.id, forkMeta);
       }
 
-      session.onClientDetach?.(client);
-
       console.log(`[fork] ${client.username} forked "${session.name}" (${claudeId}) → "${forkName}"`);
+
+      // Show confirmation, return user to their session
+      client.write('\x1b[2J\x1b[H');
+      client.write(`\r\n  \x1b[32mFork created!\x1b[0m\r\n\r\n`);
+      client.write(`  \x1b[1mOriginal:\x1b[0m ${session.name}\r\n`);
+      client.write(`  \x1b[1mFork:\x1b[0m     ${forkName}\r\n`);
+      client.write(`  \x1b[90mClaude session: ${claudeId}\x1b[0m\r\n\r\n`);
+      client.write(`  \x1b[90mYou're still in the original session.\x1b[0m\r\n`);
+      client.write(`  \x1b[90mFind the fork in the lobby (Ctrl-B d to detach).\x1b[0m\r\n\r\n`);
+      client.write('  Press any key to return to session...');
+
+      // Re-attach to original session on next keypress
+      // The helpMenu handler will clean up and re-attach
+      session.pty.attach(client);
     } catch (err: any) {
-      client.write(`\r\n  \x1b[31mFork failed: ${err.message}\x1b[0m\r\n`);
-      client.write('  Press any key to return...\r\n');
+      client.write('\x1b[2J\x1b[H');
+      client.write(`\r\n  \x1b[31mFork failed: ${err.message}\x1b[0m\r\n\r\n`);
+      client.write('  Press any key to return...');
       session.pty.attach(client);
     }
   }
