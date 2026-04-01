@@ -1,4 +1,4 @@
-import type { KeyEvent } from './keys.js';
+import { isCancelKey, type KeyEvent } from './keys.js';
 
 export interface ListPickerItem {
   label: string;
@@ -51,7 +51,7 @@ export class ListPicker {
       return { type: 'none' };
     }
 
-    if (key.key === 'Escape') {
+    if (isCancelKey(key)) {
       return { type: 'cancel' };
     }
 

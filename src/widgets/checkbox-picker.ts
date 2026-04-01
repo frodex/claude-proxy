@@ -1,5 +1,5 @@
 import { ListPicker, type ListPickerItem } from './list-picker.js';
-import type { KeyEvent } from './keys.js';
+import { isCancelKey, type KeyEvent } from './keys.js';
 
 export interface CheckboxPickerState {
   items: ListPickerItem[];
@@ -108,7 +108,7 @@ export class CheckboxPicker {
     }
 
     // Escape — cancel
-    if (key.key === 'Escape') {
+    if (isCancelKey(key)) {
       return { type: 'cancel' };
     }
 

@@ -31,7 +31,7 @@ export class YesNoPrompt {
     if (key.key === 'Enter') {
       return { type: 'answer', value: this.state.defaultValue };
     }
-    if (key.key === 'Escape') {
+    if (key.key === 'Escape' || key.key === 'CtrlC') {
       return { type: 'cancel' };
     }
     return { type: 'none' };

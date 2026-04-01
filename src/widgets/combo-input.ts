@@ -1,6 +1,6 @@
 import { ListPicker, type ListPickerItem, type ListPickerState } from './list-picker.js';
 import { TextInput, type TextInputState } from './text-input.js';
-import type { KeyEvent } from './keys.js';
+import { isCancelKey, type KeyEvent } from './keys.js';
 
 export interface ComboInputState {
   mode: 'picker' | 'text';
@@ -43,8 +43,8 @@ export class ComboInput {
   }
 
   private handlePickerKey(key: KeyEvent): ComboInputEvent {
-    // Escape — cancel
-    if (key.key === 'Escape') {
+    // Cancel (Esc, Ctrl+C, q)
+    if (isCancelKey(key)) {
       return { type: 'cancel' };
     }
 
@@ -94,8 +94,8 @@ export class ComboInput {
   }
 
   private handleTextKey(key: KeyEvent): ComboInputEvent {
-    // Escape — back to picker
-    if (key.key === 'Escape') {
+    // Escape or Ctrl+C — back to picker (not q — that types q)
+    if (key.key === 'Escape' || key.key === 'CtrlC') {
       this.state.mode = 'picker';
       this.text.setBuffer('');
       return { type: 'none' };

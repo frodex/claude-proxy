@@ -1,4 +1,4 @@
-import type { KeyEvent } from './keys.js';
+import { isCancelKey, type KeyEvent } from './keys.js';
 
 export interface TextInputState {
   buffer: string;
@@ -29,7 +29,12 @@ export class TextInput {
       return { type: 'submit', value: this.state.buffer };
     }
 
-    if (key.key === 'Escape') {
+    if (key.key === 'Escape' || key.key === 'CtrlC') {
+      return { type: 'cancel' };
+    }
+
+    // q cancels only when buffer is empty (otherwise it types q)
+    if (key.key === 'q' && this.state.buffer.length === 0) {
       return { type: 'cancel' };
     }
 

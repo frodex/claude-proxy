@@ -461,8 +461,8 @@ function handleResumeIdInput(client: Client, data: Buffer): void {
   if (!flow) return;
   const str = data.toString();
 
-  // Esc — cancel back to lobby
-  if (str === '\x1b' && data.length === 1) {
+  // Esc or Ctrl+C — cancel back to lobby
+  if ((str === '\x1b' && data.length === 1) || str === '\x03') {
     resumeIdFlow.delete(client.id);
     showLobby(client);
     return;
@@ -723,7 +723,7 @@ transport.onConnect((client) => {
     if (passwordFlow.has(client.id)) {
       const pf = passwordFlow.get(client.id)!;
       const str = data.toString();
-      if (str === '\x1b' && data.length === 1) { passwordFlow.delete(client.id); showLobby(client); return; }
+      if ((str === '\x1b' && data.length === 1) || str === '\x03') { passwordFlow.delete(client.id); showLobby(client); return; }
       if (str === '\x7f' || str === '\b') { if (pf.buffer.length > 0) { pf.buffer = pf.buffer.slice(0, -1); client.write('\b \b'); } return; }
       if (str === '\r' || str === '\n') {
         const session = sessionManager.getSession(pf.sessionId);
