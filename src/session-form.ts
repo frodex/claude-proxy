@@ -263,7 +263,13 @@ function applyResult(field: FieldConfig, event: any, acc: Record<string, any>, c
 function getDisplayValue(field: FieldConfig, acc: Record<string, any>): string {
   const key = FIELD_TO_KEY[field.id] ?? field.id;
   const val = acc[key];
-  if (val === undefined || val === null) return '';
+  if (val === undefined || val === null) {
+    // Field-specific defaults for display
+    if (field.id === 'server') return 'local';
+    if (field.id === 'workdir') return '~ (home directory)';
+    if (field.id === 'runas') return acc._defaultUser || 'root';
+    return '';
+  }
   if (typeof val === 'boolean') return val ? 'Yes' : 'No';
   if (typeof val === 'string') {
     if (field.widget === 'text-masked' && val) return '****';

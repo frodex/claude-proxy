@@ -145,10 +145,20 @@ export class FlowEngine {
     let i = from + direction;
     while (i >= 0 && i < this.steps.length) {
       const step = this.steps[i];
-      if (!step.condition || step.condition(this.accumulated)) {
-        return i;
+      // Skip grayed (condition false) and locked fields
+      if (step.condition && !step.condition(this.accumulated)) {
+        i += direction;
+        continue;
       }
-      i += direction;
+      // Skip locked fields — display only, not interactive
+      try {
+        const widget = step.createWidget(this.accumulated);
+        if (widget.state?.locked) {
+          i += direction;
+          continue;
+        }
+      } catch {}
+      return i;
     }
     return from; // no valid step found, stay put
   }
