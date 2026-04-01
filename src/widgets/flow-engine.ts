@@ -99,6 +99,9 @@ export class FlowEngine {
       this.mode = 'edit';
       return { type: 'mode-change', mode: 'edit' };
     }
+    if (key.key === 's' || key.key === 'S') {
+      return this.trySubmit();
+    }
     if (key.key === 'Escape' || key.key === 'CtrlC') {
       return { type: 'flow-cancelled' };
     }
@@ -138,6 +141,28 @@ export class FlowEngine {
       i += direction;
     }
     return from; // no valid step found, stay put
+  }
+
+  trySubmit(): FlowEvent {
+    const missing = this.getMissingRequired();
+    if (missing.length > 0) {
+      this.currentIndex = missing[0];
+      return { type: 'none' };
+    }
+    this.complete = true;
+    return { type: 'flow-complete', results: this.accumulated };
+  }
+
+  getMissingRequired(): number[] {
+    const missing: number[] = [];
+    for (let i = 0; i < this.steps.length; i++) {
+      const step = this.steps[i];
+      if (step.condition && !step.condition(this.accumulated)) continue;
+      if (step.required && !this.completedSteps.has(i)) {
+        missing.push(i);
+      }
+    }
+    return missing;
   }
 
   getCurrentState(): { stepId: string; widget: Widget; progress: number } {

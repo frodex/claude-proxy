@@ -263,6 +263,106 @@ test('legacy mode (no setMode call) works exactly as before', () => {
   expect(flow.getCurrentState().stepId).toBe('hidden');
 });
 
+// === Validation and submit gate tests ===
+
+test('trySubmit fails when required fields are incomplete', () => {
+  const flow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Name',
+      required: true,
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+    {
+      id: 'optional',
+      label: 'Optional',
+      createWidget: () => new YesNoPrompt({ prompt: 'Optional?', defaultValue: false }),
+      onResult: (e, acc) => { acc.optional = e.value; },
+    },
+  ];
+
+  const engine = new FlowEngine(flow);
+  engine.setMode('navigate');
+
+  const result = engine.trySubmit();
+  expect(result.type).toBe('none'); // blocked
+  expect(engine.getMissingRequired()).toEqual([0]); // name is missing
+});
+
+test('trySubmit succeeds when all required fields are complete', () => {
+  const flow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Name',
+      required: true,
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+  ];
+
+  const engine = new FlowEngine(flow);
+  engine.setMode('navigate');
+
+  // Edit and complete the name field
+  engine.handleKey(parseKey(Buffer.from('\r'))); // Enter edit
+  engine.handleKey(parseKey(Buffer.from('test')));
+  engine.handleKey(parseKey(Buffer.from('\r'))); // Submit field
+
+  const result = engine.trySubmit();
+  expect(result.type).toBe('flow-complete');
+});
+
+test('getMissingRequired skips grayed conditional fields', () => {
+  const flow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Name',
+      required: true,
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+    {
+      id: 'admin',
+      label: 'Admin',
+      required: true,
+      condition: () => false,
+      createWidget: () => new YesNoPrompt({ prompt: 'Admin?', defaultValue: false }),
+      onResult: (e, acc) => { acc.admin = e.value; },
+    },
+  ];
+
+  const engine = new FlowEngine(flow);
+  engine.setMode('navigate');
+
+  // Only name is missing — admin is conditional-false so not required
+  expect(engine.getMissingRequired()).toEqual([0]);
+});
+
+test('navigate mode: s key triggers trySubmit', () => {
+  const flow: FlowStep[] = [
+    {
+      id: 'name',
+      label: 'Name',
+      required: true,
+      createWidget: () => new TextInput({ prompt: 'Name' }),
+      onResult: (e, acc) => { acc.name = e.value; },
+    },
+  ];
+
+  const engine = new FlowEngine(flow);
+  engine.setMode('navigate');
+
+  // Complete the field first
+  engine.handleKey(parseKey(Buffer.from('\r'))); // Enter edit
+  engine.handleKey(parseKey(Buffer.from('test')));
+  engine.handleKey(parseKey(Buffer.from('\r'))); // Submit field
+
+  // Now press 's' to submit
+  const event = engine.handleKey(parseKey(Buffer.from('s')));
+  expect(event.type).toBe('flow-complete');
+});
+
 test('isComplete returns true after all steps', () => {
   const flow = new FlowEngine(twoStepFlow);
   expect(flow.isComplete()).toBe(false);
