@@ -173,13 +173,9 @@ function createWidget(
     }
 
     case 'combo': {
-      if (locked && initial) {
-        return new TextInput({ prompt: field.label, initial: String(initial), locked: true });
-      }
-      const items = context?.getDirItems
-        ? [{ label: '~ (home directory)' }, ...context.getDirItems(acc)]
-        : [{ label: '~ (home directory)' }];
-      return new ComboInput({ items, prompt: 'Path', title: field.label });
+      // Temporary: plain text field until DirectorySelector service is built
+      // See: docs/superpowers/specs/2026-04-01-directory-selector-design.md
+      return new TextInput({ prompt: field.label, initial: initial ?? '', locked });
     }
 
     default:
