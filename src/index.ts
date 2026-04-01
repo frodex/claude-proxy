@@ -70,7 +70,7 @@ const clientState: Map<string, {
   client: Client;
 }> = new Map();
 
-const creationFlows: Map<string, { flow: FlowEngine; isResume?: boolean }> = new Map();
+const creationFlows: Map<string, { flow: FlowEngine; isResume?: boolean; isFork?: boolean; sourceSessionId?: string; claudeId?: string }> = new Map();
 
 // Password hashing (simple SHA-256 — not bcrypt to avoid dependency)
 function hashPassword(pw: string): string {
@@ -84,6 +84,8 @@ const restartFlows: Map<string, { picker: ListPicker; deadSessions: StoredSessio
 const resumeIdFlow: Map<string, { dead: StoredSession; buffer: string }> = new Map();
 
 const exportFlows: Map<string, { picker: CheckboxPicker; sessions: ExportableSession[] }> = new Map();
+
+const forkPickerFlows: Map<string, { picker: ListPicker; sessions: Session[] }> = new Map();
 
 const transport = new SSHTransport({
   port: config.port,
@@ -137,7 +139,7 @@ function renderSessionForm(client: Client): void {
   const summary = entry.flow.getFlowSummary();
   const state = entry.flow.getCurrentState();
   const missing = entry.flow.getMode() !== 'legacy' ? entry.flow.getMissingRequired() : [];
-  const title = entry.isResume ? 'Resume session' : 'New session';
+  const title = entry.isFork ? 'Fork session' : entry.isResume ? 'Resume session' : 'New session';
 
   client.write(renderFlowForm(title, summary, state.widget, state.stepId, missing.length > 0 ? missing : undefined));
 }
@@ -182,6 +184,38 @@ function startNewSessionFlow(client: Client): void {
   const flow = new FlowEngine(steps, initialState);
   flow.setMode('navigate');
   creationFlows.set(client.id, { flow });
+  renderSessionForm(client);
+}
+
+
+function startRestartWithForm(client: Client, dead: StoredSession): void {
+  const prefill: Record<string, any> = {
+    name: dead.name,
+    runAsUser: dead.runAsUser,
+    workingDir: dead.workingDir,
+    remoteHost: dead.remoteHost,
+    hidden: dead.access?.hidden,
+    viewOnly: dead.access?.viewOnly,
+    public: dead.access?.public,
+    allowedUsers: dead.access?.allowedUsers,
+    allowedGroups: dead.access?.allowedGroups,
+    claudeSessionId: dead.claudeSessionId,
+  };
+
+  const steps = buildSessionFormSteps('restart', client, prefill, {
+    getUsers: () => getClaudeUsers().filter(u => u !== client.username),
+    getGroups: () => getClaudeGroups(),
+  });
+
+  const initialState: Record<string, any> = {
+    _isAdmin: isAdmin(client.username),
+    _hasRemotes: false,
+    _defaultUser: client.username,
+  };
+
+  const flow = new FlowEngine(steps, initialState);
+  flow.setMode('navigate');
+  creationFlows.set(client.id, { flow, isResume: true });
   renderSessionForm(client);
 }
 
@@ -265,6 +299,60 @@ function finalizeSessionFromResults(client: Client, results: Record<string, any>
   }
 }
 
+function finalizeForkFromLobby(client: Client, results: Record<string, any>, sourceSessionId: string, claudeId: string): void {
+  const sourceSession = sessionManager.getSession(sourceSessionId);
+  if (!sourceSession) {
+    client.write('\r\n  Source session no longer exists.\r\n');
+    setTimeout(() => showLobby(client), 1500);
+    return;
+  }
+
+  const forkName = results.name || `${sourceSession.name}-fork`;
+  const access: Partial<SessionAccess> = {
+    owner: client.username,
+    hidden: results.hidden ?? sourceSession.access.hidden,
+    viewOnly: results.viewOnly ?? sourceSession.access.viewOnly,
+    public: results.public ?? sourceSession.access.public,
+    allowedUsers: results.allowedUsers ?? sourceSession.access.allowedUsers,
+    allowedGroups: results.allowedGroups ?? sourceSession.access.allowedGroups,
+    passwordHash: results.password ? hashPassword(results.password) : null,
+  };
+
+  try {
+    console.log(`[fork] ${client.username} forking "${sourceSession.name}" (${claudeId}) → "${forkName}" from lobby`);
+    const forkedSession = sessionManager.createSession(
+      forkName,
+      client,
+      sourceSession.runAsUser,
+      'claude',
+      access,
+      ['--resume', claudeId, '--fork-session'],
+      undefined,
+      sourceSession.workingDir,
+    );
+
+    // Store the source Claude session ID in the fork's metadata
+    const forkMeta = loadSessionMeta(forkedSession.id);
+    if (forkMeta) {
+      forkMeta.pastClaudeSessionIds = [claudeId];
+      saveSessionMeta(forkedSession.id, forkMeta);
+    }
+
+    const state = clientState.get(client.id);
+    if (state) {
+      state.mode = 'session';
+      state.sessionId = forkedSession.id;
+    }
+    sessionManager.setOnClientDetach(forkedSession.id, (detachedClient) => {
+      if (detachedClient.id === client.id) showLobby(client);
+    });
+    client.write('\x1b[2J\x1b[H');
+  } catch (err: any) {
+    client.write(`\r\nError: ${err.message}\r\n`);
+    setTimeout(() => showLobby(client), 2000);
+  }
+}
+
 function startResumeFlow(client: Client): void {
   const dead = listDeadSessions().filter(s =>
     s.access?.owner === client.username || s.runAsUser === client.username
@@ -320,11 +408,10 @@ function handleRestartInput(client: Client, data: Buffer): void {
       return;
     }
 
-    // Prompt for Claude session ID before restarting
+    // Show SessionForm in restart mode
     const dead = flow.deadSessions[event.index];
     restartFlows.delete(client.id);
-    resumeIdFlow.set(client.id, { dead, buffer: dead.claudeSessionId || '' });
-    renderResumeIdPrompt(client);
+    startRestartWithForm(client, dead);
     return;
   }
 
@@ -571,6 +658,112 @@ function handleExportInput(client: Client, data: Buffer): void {
   }
 }
 
+function startForkFromLobby(client: Client): void {
+  const sessions = sessionManager.listSessionsForUser(client.username);
+  const items = sessions.map(s => {
+    const meta = loadSessionMeta(s.id);
+    const hasClaudeId = !!meta?.claudeSessionId;
+    return {
+      label: `${s.name}${hasClaudeId ? '' : ' (no session ID)'}`,
+      disabled: !hasClaudeId,
+    };
+  });
+
+  if (items.length === 0) {
+    client.write('\r\n  No active sessions to fork.\r\n');
+    setTimeout(() => showLobby(client), 1500);
+    return;
+  }
+
+  items.push({ label: 'Cancel', disabled: false });
+  const picker = new ListPicker({ items, title: 'Select session to fork' });
+  forkPickerFlows.set(client.id, { picker, sessions });
+  client.write(renderListPicker(picker.state));
+}
+
+function handleForkPickerInput(client: Client, data: Buffer): void {
+  const flow = forkPickerFlows.get(client.id);
+  if (!flow) return;
+
+  const key = parseKey(data);
+  const event = flow.picker.handleKey(key);
+
+  if (event.type === 'cancel') {
+    forkPickerFlows.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (event.type === 'select') {
+    // Cancel option (last item)
+    if (event.index === flow.sessions.length) {
+      forkPickerFlows.delete(client.id);
+      showLobby(client);
+      return;
+    }
+
+    const session = flow.sessions[event.index];
+    const meta = loadSessionMeta(session.id);
+    const claudeId = meta?.claudeSessionId;
+    forkPickerFlows.delete(client.id);
+
+    if (!claudeId) {
+      client.write('\r\n  No Claude session ID — cannot fork.\r\n');
+      setTimeout(() => showLobby(client), 1500);
+      return;
+    }
+
+    // Build fork form from lobby
+    const prefill: Record<string, any> = {
+      name: session.name,
+      runAsUser: session.runAsUser,
+      workingDir: session.workingDir,
+      remoteHost: session.remoteHost,
+      hidden: session.access.hidden,
+      viewOnly: session.access.viewOnly,
+      public: session.access.public,
+      allowedUsers: session.access.allowedUsers,
+      allowedGroups: session.access.allowedGroups,
+      password: '',
+      dangerousSkipPermissions: false,
+      claudeSessionId: claudeId,
+    };
+
+    const generateForkName = (baseName: string): string => {
+      let forkNum = 1;
+      while (true) {
+        const candidate = `${baseName}-fork_${String(forkNum).padStart(2, '0')}`;
+        // Check if name is already in use
+        const allSessions = sessionManager.listSessions();
+        if (!allSessions.find(s => s.name === candidate)) return candidate;
+        forkNum++;
+      }
+    };
+
+    const steps = buildSessionFormSteps('fork', client, prefill, {
+      getUsers: () => getClaudeUsers().filter(u => u !== client.username),
+      getGroups: () => getClaudeGroups(),
+      generateForkName,
+    });
+
+    const initialState: Record<string, any> = {
+      _isAdmin: isAdmin(client.username),
+      _hasRemotes: false,
+      _defaultUser: client.username,
+    };
+
+    const flowEngine = new FlowEngine(steps, initialState);
+    flowEngine.setMode('navigate');
+    creationFlows.set(client.id, { flow: flowEngine, isFork: true, sourceSessionId: session.id, claudeId });
+    renderSessionForm(client);
+    return;
+  }
+
+  if (event.type === 'navigate') {
+    client.write(renderListPicker(flow.picker.state));
+  }
+}
+
 function handleCreationInput(client: Client, data: Buffer): void {
   const entry = creationFlows.get(client.id);
   if (!entry) return;
@@ -579,8 +772,13 @@ function handleCreationInput(client: Client, data: Buffer): void {
   const event = entry.flow.handleKey(key);
 
   if (event.type === 'flow-complete') {
-    creationFlows.delete(client.id);
-    finalizeSessionFromResults(client, event.results, entry.isResume);
+    if (entry.isFork && entry.sourceSessionId && entry.claudeId) {
+      creationFlows.delete(client.id);
+      finalizeForkFromLobby(client, event.results, entry.sourceSessionId, entry.claudeId);
+    } else {
+      creationFlows.delete(client.id);
+      finalizeSessionFromResults(client, event.results, entry.isResume);
+    }
   } else if (event.type === 'flow-cancelled') {
     creationFlows.delete(client.id);
     showLobby(client);
@@ -621,6 +819,11 @@ transport.onConnect((client) => {
 
     if (exportFlows.has(client.id)) {
       handleExportInput(client, data);
+      return;
+    }
+
+    if (forkPickerFlows.has(client.id)) {
+      handleForkPickerInput(client, data);
       return;
     }
 
@@ -686,6 +889,8 @@ transport.onConnect((client) => {
             startNewSessionFlow(client);
           } else if (result.action === 'continue') {
             startResumeFlow(client);
+          } else if (result.action === 'fork') {
+            startForkFromLobby(client);
           } else if (result.action === 'export') {
             startExportFlow(client);
           } else if (result.action === 'quit') {
@@ -718,6 +923,7 @@ transport.onConnect((client) => {
     }
     clientState.delete(client.id);
     creationFlows.delete(client.id);
+    forkPickerFlows.delete(client.id);
   });
 
   showLobby(client);
