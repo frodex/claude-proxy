@@ -130,7 +130,8 @@ function findClaudePid(parentPid: number): number | null {
       if (!match) continue;
       const pid = parseInt(match[1]);
       const cmd = match[2];
-      if (cmd === 'claude' || cmd.endsWith('/claude')) return pid;
+      const cmdBase = cmd.split(' ')[0];
+      if (cmdBase === 'claude' || cmdBase.endsWith('/claude')) return pid;
       // Recurse into children
       const found = findClaudePid(pid);
       if (found) return found;
