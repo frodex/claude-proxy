@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
-import { renderListPicker, renderTextInput, renderYesNo, renderCheckboxPicker } from '../../src/widgets/renderers.js';
+import { renderListPicker, renderTextInput, renderYesNo, renderCheckboxPicker, renderFlowForm } from '../../src/widgets/renderers.js';
+import type { FlowStepSummary } from '../../src/widgets/flow-engine.js';
 
 test('renderListPicker shows cursor arrow on current item', () => {
   const output = renderListPicker({
@@ -52,4 +53,31 @@ test('renderCheckboxPicker shows checked and unchecked items', () => {
   });
   expect(output).toContain('[x]');
   expect(output).toContain('[ ]');
+});
+
+test('renderFlowForm shows all steps with correct state indicators', () => {
+  const summary: FlowStepSummary[] = [
+    { id: 'name', label: 'Session name', fieldState: 'completed', value: 'my-project' },
+    { id: 'hidden', label: 'Hidden', fieldState: 'editing' },
+    { id: 'public', label: 'Public', fieldState: 'pending' },
+    { id: 'users', label: 'Users', fieldState: 'grayed' },
+    { id: 'server', label: 'Server', fieldState: 'locked', value: 'bigserver' },
+  ];
+  const mockWidget = { state: { defaultValue: false, prompt: 'Hidden?' } };
+  const output = renderFlowForm('New session', summary, mockWidget, 'hidden');
+
+  expect(output).toContain('my-project');     // completed value
+  expect(output).toContain('\u2713');          // checkmark for completed
+  expect(output).toContain('>');               // cursor on active/editing
+  expect(output).toContain('---');             // grayed placeholder
+  expect(output).toContain('\uD83D\uDD12');    // lock emoji for locked
+});
+
+test('renderFlowForm highlights missing required fields in red', () => {
+  const summary: FlowStepSummary[] = [
+    { id: 'name', label: 'Session name', fieldState: 'active' },
+  ];
+  const output = renderFlowForm('New session', summary, null, '', [0]);
+  expect(output).toContain('\x1b[31m'); // red
+  expect(output).toContain('Session name');
 });

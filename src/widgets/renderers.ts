@@ -1,4 +1,6 @@
 // src/widgets/renderers.ts
+import { STATE_COLORS, RESET } from './keys.js';
+import type { FlowStepSummary } from './flow-engine.js';
 import type { ListPickerState } from './list-picker.js';
 import type { TextInputState } from './text-input.js';
 import type { YesNoState } from './yes-no.js';
@@ -74,4 +76,68 @@ export function renderComboInput(state: ComboInputState): string {
     return `\x1b[2J\x1b[H\x1b[1mWorking directory:\x1b[0m\r\n  \x1b[38;5;245mesc=back to list, tab=complete\x1b[0m\r\n\r\n  Path: ${state.text.buffer}`;
   }
   return renderListPicker(state.picker);
+}
+
+export function renderFlowForm(
+  title: string,
+  summary: FlowStepSummary[],
+  activeWidget: any,
+  activeStepId: string,
+  invalidIndices?: number[],
+): string {
+  const invalidSet = new Set(invalidIndices ?? []);
+  const parts: string[] = ['\x1b[2J\x1b[H'];
+  parts.push(`  \x1b[1m${title}\x1b[0m\r\n`);
+  parts.push(`  \x1b[38;5;245m${'─'.repeat(50)}\x1b[0m\r\n\r\n`);
+
+  for (let i = 0; i < summary.length; i++) {
+    const step = summary[i];
+    const color = STATE_COLORS[step.fieldState];
+    const isInvalid = invalidSet.has(i);
+    const labelColor = isInvalid ? '\x1b[31m' : color; // red if invalid
+
+    if (step.fieldState === 'editing') {
+      parts.push(`\x1b[33m>\x1b[0m ${labelColor}${step.label}:${RESET} `);
+      parts.push(renderInlineWidget(activeWidget));
+      parts.push('\r\n');
+    } else if (step.fieldState === 'active') {
+      parts.push(`\x1b[33m>\x1b[0m ${labelColor}${step.label}:${RESET} `);
+      if (step.value) {
+        parts.push(`${step.value}`);
+      } else {
+        parts.push(`\x1b[2m[enter to edit]\x1b[0m`);
+      }
+      parts.push('\r\n');
+    } else if (step.fieldState === 'completed') {
+      parts.push(`  ${color}${step.label}: ${step.value}${RESET} \u2713\r\n`);
+    } else if (step.fieldState === 'grayed') {
+      parts.push(`  ${color}${step.label}: ---${RESET}\r\n`);
+    } else if (step.fieldState === 'locked') {
+      parts.push(`  ${color}\uD83D\uDD12 ${step.label}: ${step.value || ''}${RESET}\r\n`);
+    } else {
+      // pending
+      parts.push(`  ${color}${step.label}: \x1b[2m[default]\x1b[0m${RESET}\r\n`);
+    }
+  }
+
+  parts.push(`\r\n  \x1b[38;5;245m\u2191\u2193=navigate, enter=edit, s=submit, esc=cancel\x1b[0m\r\n`);
+  return parts.join('');
+}
+
+function renderInlineWidget(widget: any): string {
+  if (!widget) return '';
+  if (widget.state?.buffer !== undefined) {
+    const display = widget.state.masked ? '*'.repeat(widget.state.buffer.length) : widget.state.buffer;
+    return display + '\x1b[K';
+  }
+  if (widget.state?.defaultValue !== undefined && widget.state?.prompt !== undefined) {
+    const yes = widget.state.defaultValue ? 'Y' : 'y';
+    const no = widget.state.defaultValue ? 'n' : 'N';
+    return `[${yes}/${no}]`;
+  }
+  if (widget.state?.items) {
+    const item = widget.state.items[widget.state.cursor];
+    return item ? `[${item.label}] \u2191\u2193` : '';
+  }
+  return '';
 }
