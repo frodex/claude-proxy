@@ -96,8 +96,19 @@ export class FlowEngine {
       if (!step) return { type: 'none' };
       if (step.condition && !step.condition(this.accumulated)) return { type: 'none' };
       const widget = step.createWidget(this.accumulated);
-      // Don't enter edit mode for locked widgets
+      // Locked widgets — advance past them
       if (widget.state?.locked) {
+        const next = this.findNextVisible(this.currentIndex, 1);
+        if (next !== this.currentIndex) this.currentIndex = next;
+        return { type: 'none' };
+      }
+      // If field already has a value (prefilled/default), accept and advance
+      const displayVal = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+      if (displayVal && !this.completedSteps.has(this.currentIndex)) {
+        // Accept the existing value
+        this.completedSteps.add(this.currentIndex);
+        const next = this.findNextVisible(this.currentIndex, 1);
+        if (next !== this.currentIndex) this.currentIndex = next;
         return { type: 'none' };
       }
       this.currentWidget = widget;
