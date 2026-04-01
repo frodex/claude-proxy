@@ -100,6 +100,17 @@ export function renderFlowForm(
       parts.push(`\x1b[33m>\x1b[0m ${labelColor}${step.label}:${RESET} `);
       parts.push(renderInlineWidget(activeWidget));
       parts.push('\r\n');
+      // Expand ComboInput picker items below the field
+      if (activeWidget?.state?.mode === 'picker' && activeWidget?.state?.picker?.items) {
+        const pickerItems = activeWidget.state.picker.items;
+        const pickerCursor = activeWidget.state.picker.cursor;
+        for (let j = 0; j < pickerItems.length; j++) {
+          const pArrow = j === pickerCursor ? '  \x1b[33m>\x1b[0m' : '   ';
+          const pLabel = j === pickerCursor ? `\x1b[1m${pickerItems[j].label}\x1b[0m` : `\x1b[38;5;245m${pickerItems[j].label}\x1b[0m`;
+          parts.push(`${pArrow} ${pLabel}\r\n`);
+        }
+        parts.push(`  \x1b[38;5;245m\u2191\u2193=select, enter=choose, type=freehand\x1b[0m\r\n`);
+      }
     } else if (step.fieldState === 'active') {
       parts.push(`\x1b[33m>\x1b[0m ${labelColor}${step.label}:${RESET} `);
       if (step.value) {
