@@ -40,6 +40,7 @@ interface ManagedSession extends Session {
 export class SessionManager {
   private sessions: Map<string, ManagedSession> = new Map();
   private editFlows = new Map<string, { flow: FlowEngine; sessionId: string }>();
+  private forkFlows = new Map<string, { flow: FlowEngine; sourceSessionId: string; claudeId: string; notice?: boolean; forkResults?: Record<string, any> }>();
   private options: SessionManagerOptions;
   private onSessionEndCallback?: (sessionId: string) => void;
   private socketManager?: SocketManager;
@@ -427,6 +428,12 @@ export class SessionManager {
       return;
     }
 
+    // Fork flow active (SessionForm + notice screen)
+    if (this.forkFlows.has(client.id)) {
+      this.handleForkInput(sessionId, client, data);
+      return;
+    }
+
     // Help menu active
     if (session.helpMenu.has(client.id)) {
       const str = data.toString();
@@ -579,12 +586,12 @@ export class SessionManager {
         this.startEditSession(sessionId, client);
         break;
       case 'forkSession':
-        this.forkSession(sessionId, client);
+        this.startForkFlow(sessionId, client);
         break;
     }
   }
 
-  private forkSession(sessionId: string, client: Client): void {
+  private startForkFlow(sessionId: string, client: Client): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
@@ -607,46 +614,146 @@ export class SessionManager {
       client.write('  \x1b[90mThe session ID is discovered automatically after Claude starts.\x1b[0m\r\n');
       client.write('  \x1b[90mTry again in a few seconds, or use Ctrl-B e to enter one manually.\x1b[0m\r\n\r\n');
       client.write('  Press any key to return...');
-      // Return to session on next keypress
       session.pty.attach(client);
       return;
     }
 
-    // Generate fork name
-    const baseName = session.name;
-    let forkNum = 1;
-    while (this.sessions.has(`cp-${baseName}-fork_${String(forkNum).padStart(2, '0')}`.replace(/[^a-zA-Z0-9_-]/g, '_'))) {
-      forkNum++;
+    session.pty.detach(client);
+
+    const prefill: Record<string, any> = {
+      name: session.name,
+      runAsUser: session.runAsUser,
+      remoteHost: session.remoteHost,
+      workingDir: session.workingDir,
+      hidden: session.access.hidden,
+      viewOnly: session.access.viewOnly,
+      public: session.access.public,
+      allowedUsers: session.access.allowedUsers,
+      allowedGroups: session.access.allowedGroups,
+      password: '',
+      dangerousSkipPermissions: false,
+      claudeSessionId: claudeId,
+    };
+
+    const generateForkName = (baseName: string): string => {
+      let forkNum = 1;
+      while (true) {
+        const candidate = `${baseName}-fork_${String(forkNum).padStart(2, '0')}`;
+        const tmuxId = `cp-${candidate.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        if (!this.sessions.has(tmuxId)) return candidate;
+        forkNum++;
+      }
+    };
+
+    const steps = buildSessionFormSteps('fork', client, prefill, {
+      getUsers: () => getClaudeUsers().filter(u => u !== session.access.owner),
+      getGroups: () => getClaudeGroups(),
+      generateForkName,
+    });
+
+    const initialState: Record<string, any> = {
+      _isAdmin: client.username === 'root' || isUserInGroup(client.username, 'admins'),
+      _hasRemotes: false,
+      _defaultUser: client.username,
+    };
+
+    const flow = new FlowEngine(steps, initialState);
+    flow.setMode('navigate');
+    this.forkFlows.set(client.id, { flow, sourceSessionId: sessionId, claudeId });
+    this.renderForkForm(client);
+  }
+
+  private renderForkForm(client: Client): void {
+    const entry = this.forkFlows.get(client.id);
+    if (!entry) return;
+    const summary = entry.flow.getFlowSummary();
+    const state = entry.flow.getCurrentState();
+    const missing = entry.flow.getMissingRequired();
+    client.write(renderFlowForm('Fork session', summary, state.widget, state.stepId, missing.length > 0 ? missing : undefined));
+  }
+
+  private showForkNotice(client: Client, sourceName: string, forkName: string): void {
+    const parts: string[] = ['\x1b[2J\x1b[H'];
+    parts.push(`  \x1b[1mFork session\x1b[0m\r\n`);
+    parts.push(`  \x1b[38;5;245m${'─'.repeat(50)}\x1b[0m\r\n\r\n`);
+    parts.push(`  You are creating a fork of "\x1b[1m${sourceName}\x1b[0m"\r\n`);
+    parts.push(`  New session: \x1b[1m${forkName}\x1b[0m\r\n\r\n`);
+    parts.push(`  Your current session will remain running and\r\n`);
+    parts.push(`  can be accessed from the lobby.\r\n\r\n`);
+    parts.push(`  After confirmation you will be placed in the\r\n`);
+    parts.push(`  forked session.\r\n\r\n`);
+    parts.push(`  \x1b[38;5;245m[Enter] Create fork    [Esc] Cancel\x1b[0m\r\n`);
+    client.write(parts.join(''));
+  }
+
+  private handleForkInput(sessionId: string, client: Client, data: Buffer): void {
+    const entry = this.forkFlows.get(client.id);
+    if (!entry) return;
+
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    if (entry.notice) {
+      // On notice screen — Enter creates fork, Escape cancels
+      const str = data.toString();
+      if (str === '\r' || str === '\n') {
+        this.forkFlows.delete(client.id);
+        this.executeFork(sessionId, client, entry.forkResults!, entry.claudeId);
+      } else if (str === '\x1b' && data.length === 1) {
+        this.forkFlows.delete(client.id);
+        client.write('\x1b[2J\x1b[H');
+        session.pty.attach(client);
+      }
+      return;
     }
-    const forkName = `${baseName}-fork_${String(forkNum).padStart(2, '0')}`;
+
+    // Delegate to flow engine
+    const key = parseKey(data);
+    const event = entry.flow.handleKey(key);
+
+    if (event.type === 'flow-complete') {
+      entry.forkResults = event.results;
+      entry.notice = true;
+      const forkName = event.results.name || 'unnamed-fork';
+      this.showForkNotice(client, session.name, forkName);
+    } else if (event.type === 'flow-cancelled') {
+      this.forkFlows.delete(client.id);
+      client.write('\x1b[2J\x1b[H');
+      session.pty.attach(client);
+    } else {
+      this.renderForkForm(client);
+    }
+  }
+
+  private executeFork(sessionId: string, client: Client, results: Record<string, any>, claudeId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const forkName = results.name || `${session.name}-fork`;
 
     try {
-      // Create fork in background — user stays in current session
-      // Use a fake client for the fork (no one is attached initially)
-      const forkClient: Client = {
-        id: `fork-${Date.now()}`,
-        username: client.username,
-        transport: client.transport,
-        termSize: client.termSize,
-        write: () => {},  // no output — nobody is watching yet
-        lastKeystroke: Date.now(),
-      };
-
       const forkedSession = this.createSession(
         forkName,
-        forkClient,
+        client,
         session.runAsUser,
         'claude',
-        session.access,
+        {
+          owner: client.username,
+          hidden: results.hidden ?? session.access.hidden,
+          viewOnly: results.viewOnly ?? session.access.viewOnly,
+          public: results.public ?? session.access.public,
+          allowedUsers: results.allowedUsers ?? session.access.allowedUsers,
+          allowedGroups: results.allowedGroups ?? session.access.allowedGroups,
+          passwordHash: results.password
+            ? createHash('sha256').update(results.password).digest('hex')
+            : null,
+        },
         ['--resume', claudeId, '--fork-session'],
         undefined,
         session.workingDir,
       );
 
-      // Immediately detach the fake client
-      this.leaveSession(forkedSession.id, forkClient);
-
-      // Store the source session ID in the fork's metadata
+      // Store the source Claude session ID in the fork's metadata
       const forkMeta = loadSessionMeta(forkedSession.id);
       if (forkMeta) {
         forkMeta.pastClaudeSessionIds = [claudeId];
@@ -655,19 +762,10 @@ export class SessionManager {
 
       console.log(`[fork] ${client.username} forked "${session.name}" (${claudeId}) → "${forkName}"`);
 
-      // Show confirmation, return user to their session
-      client.write('\x1b[2J\x1b[H');
-      client.write(`\r\n  \x1b[32mFork created!\x1b[0m\r\n\r\n`);
-      client.write(`  \x1b[1mOriginal:\x1b[0m ${session.name}\r\n`);
-      client.write(`  \x1b[1mFork:\x1b[0m     ${forkName}\r\n`);
-      client.write(`  \x1b[90mClaude session: ${claudeId}\x1b[0m\r\n\r\n`);
-      client.write(`  \x1b[90mYou're still in the original session.\x1b[0m\r\n`);
-      client.write(`  \x1b[90mFind the fork in the lobby (Ctrl-B d to detach).\x1b[0m\r\n\r\n`);
-      client.write('  Press any key to return to session...');
-
-      // Re-attach to original session on next keypress
-      // The helpMenu handler will clean up and re-attach
-      session.pty.attach(client);
+      // Detach from original session and enter fork
+      // (createSession already called joinSession, so client is in fork now)
+      // We need to leave the original session
+      this.leaveSession(sessionId, client);
     } catch (err: any) {
       client.write('\x1b[2J\x1b[H');
       client.write(`\r\n  \x1b[31mFork failed: ${err.message}\x1b[0m\r\n\r\n`);
