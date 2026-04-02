@@ -1,6 +1,7 @@
 // src/session-manager.ts
 
 import { randomUUID, createHash } from 'crypto';
+import { EventEmitter } from 'events';
 import { PtyMultiplexer } from './pty-multiplexer.js';
 import { StatusBar } from './status-bar.js';
 import { HotkeyHandler } from './hotkey.js';
@@ -17,6 +18,7 @@ import type { Client, Session, SessionAccess } from './types.js';
 import type { SocketManager } from './ugo/socket-manager.js';
 import type { GroupWatcher, SessionInfo } from './ugo/group-watcher.js';
 import type { Provisioner } from './auth/types.js';
+import { executeCrossFork as runCrossFork, dryRunFork, isToolAvailable as isClaudeForkAvailable } from './claude-fork-client.js';
 
 interface SessionManagerOptions {
   defaultUser: string;
@@ -35,28 +37,23 @@ interface ManagedSession extends Session {
   scrollbackViewers: Map<string, ScrollbackViewer>;
   dumpMode: Set<string>;
   helpMenu: Map<string, number>;
-  onClientDetach?: (client: Client) => void;
 }
 
-export class SessionManager {
+export class SessionManager extends EventEmitter {
   private sessions: Map<string, ManagedSession> = new Map();
   private editFlows = new Map<string, { flow: FlowEngine; sessionId: string }>();
   private forkFlows = new Map<string, { flow: FlowEngine; sourceSessionId: string; claudeId: string; notice?: string; forkResults?: Record<string, any> }>();
   private options: SessionManagerOptions;
-  private onSessionEndCallback?: (sessionId: string) => void;
   private socketManager?: SocketManager;
   private groupWatcher?: GroupWatcher;
   private provisioner?: Provisioner;
 
   constructor(options: SessionManagerOptions) {
+    super();
     this.options = options;
     this.socketManager = options.socketManager;
     this.groupWatcher = options.groupWatcher;
     this.provisioner = options.provisioner;
-  }
-
-  setOnSessionEnd(callback: (sessionId: string) => void): void {
-    this.onSessionEndCallback = callback;
   }
 
   /**
@@ -177,7 +174,7 @@ export class SessionManager {
           console.log(`[session-exit] "${name}" (${id}) exited with code ${code}`);
           deleteSessionMeta(id);
           this.sessions.delete(id);
-          this.onSessionEndCallback?.(id);
+          this.emit('session-end', id);
         },
       });
 
@@ -256,7 +253,7 @@ export class SessionManager {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
         deleteSessionMeta(tmuxId);
         this.sessions.delete(tmuxId);
-        this.onSessionEndCallback?.(tmuxId);
+        this.emit('session-end', tmuxId);
       },
     });
 
@@ -357,7 +354,7 @@ export class SessionManager {
       },
       onDetach: () => {
         this.leaveSession(sessionId, client);
-        session.onClientDetach?.(client);
+        this.emit('client-detach', { sessionId, client });
       },
       onClaimSize: () => {
         this.claimSizeOwner(sessionId, client);
@@ -506,13 +503,6 @@ export class SessionManager {
     session.pty.resize(client.termSize.cols, client.termSize.rows);
   }
 
-  setOnClientDetach(sessionId: string, callback: (client: Client) => void): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.onClientDetach = callback;
-    }
-  }
-
   private helpSections: MenuSection[] = [
     {
       title: 'Session actions',
@@ -565,7 +555,7 @@ export class SessionManager {
         break;
       case 'detach':
         this.leaveSession(sessionId, client);
-        session.onClientDetach?.(client);
+        this.emit('client-detach', { sessionId, client });
         break;
       case 'claimSize':
         this.claimSizeOwner(sessionId, client);
@@ -722,16 +712,10 @@ export class SessionManager {
     if (entry.notice) {
       const str = data.toString();
       if (entry.notice === 'dirchange') {
-        // Directory change alert — Enter=proceed, Escape=go back to form, q=cancel entirely
+        // Directory change alert — Enter=proceed with cross-fork, Escape=go back, q=cancel
         if (str === '\r' || str === '\n') {
-          // Proceed — but the actual cross-directory fork is NOT IMPLEMENTED yet
-          // For now, show a message that this feature is coming soon
-          client.write('\x1b[2J\x1b[H');
-          client.write('\r\n  \x1b[33mCross-directory fork is not yet implemented.\x1b[0m\r\n\r\n');
-          client.write('  The session file copy and CWD rewrite logic is documented in:\r\n');
-          client.write('  \x1b[36m/srv/PHAT-TOAD-with-Trails/how-to-fork-claude.md\x1b[0m\r\n\r\n');
-          client.write('  Press any key to return to session...\r\n');
-          entry.notice = 'waitkey';
+          this.forkFlows.delete(client.id);
+          this.executeCrossDirFork(sessionId, client, entry.forkResults!, entry.claudeId);
         } else if (str === '\x1b' && data.length === 1 || str === '\x03') {
           // Go back to form
           entry.notice = undefined as any;
@@ -742,13 +726,6 @@ export class SessionManager {
           client.write('\x1b[2J\x1b[H');
           session.pty.attach(client);
         }
-        return;
-      }
-      if (entry.notice === 'waitkey') {
-        // Any key returns to session
-        this.forkFlows.delete(client.id);
-        client.write('\x1b[2J\x1b[H');
-        session.pty.attach(client);
         return;
       }
       // Normal confirm notice — Enter creates fork, Escape cancels
@@ -772,9 +749,12 @@ export class SessionManager {
       const forkName = event.results.name || 'unnamed-fork';
       const sourceWorkdir = session.workingDir || '~';
       const targetWorkdir = event.results.workingDir || '~';
+      const sourceUser = session.runAsUser;
+      const targetUser = event.results.runAsUser || sourceUser;
       const workdirChanged = sourceWorkdir !== targetWorkdir;
+      const userChanged = sourceUser !== targetUser;
 
-      if (workdirChanged) {
+      if (workdirChanged || userChanged) {
         entry.notice = 'dirchange';
         this.showForkDirChangeAlert(client, session.name, forkName, sourceWorkdir, targetWorkdir, entry.claudeId);
       } else {
@@ -818,10 +798,13 @@ export class SessionManager {
         session.workingDir,
       );
 
-      // Store the source Claude session ID in the fork's metadata
+      // Store fork metadata
       const forkMeta = loadSessionMeta(forkedSession.id);
       if (forkMeta) {
         forkMeta.pastClaudeSessionIds = [claudeId];
+        forkMeta.forkedFrom = claudeId;
+        forkMeta.forkDate = new Date().toISOString();
+        forkMeta.forkTool = 'builtin';
         saveSessionMeta(forkedSession.id, forkMeta);
       }
 
@@ -831,9 +814,98 @@ export class SessionManager {
       // (createSession already called joinSession, so client is in fork now)
       // We need to leave the original session
       this.leaveSession(sessionId, client);
+      this.emit('client-session-change', { client, sessionId: forkedSession.id });
     } catch (err: any) {
       client.write('\x1b[2J\x1b[H');
       client.write(`\r\n  \x1b[31mFork failed: ${err.message}\x1b[0m\r\n\r\n`);
+      client.write('  Press any key to return...');
+      session.pty.attach(client);
+    }
+  }
+
+  private executeCrossDirFork(sessionId: string, client: Client, results: Record<string, any>, claudeId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const forkName = results.name || `${session.name}-fork`;
+    const targetWorkdir = results.workingDir || session.workingDir || '~';
+    const targetUser = results.runAsUser || session.runAsUser;
+
+    if (!isClaudeForkAvailable()) {
+      client.write('\x1b[2J\x1b[H');
+      client.write('\r\n  \x1b[31mCross-directory fork requires the claude-fork tool.\x1b[0m\r\n');
+      client.write('  \x1b[90mExpected at: /srv/svg-terminal/claude-forker/tools/claude-fork\x1b[0m\r\n\r\n');
+      client.write('  Press any key to return...\r\n');
+      session.pty.attach(client);
+      return;
+    }
+
+    try {
+      client.write('\x1b[2J\x1b[H');
+      client.write('\r\n  \x1b[33mForking session across directories...\x1b[0m\r\n\r\n');
+
+      const forkResult = runCrossFork(claudeId, targetWorkdir, targetUser !== session.runAsUser ? targetUser : undefined);
+
+      if (forkResult.status === 'error') {
+        client.write(`  \x1b[31mFork failed: ${forkResult.error}\x1b[0m\r\n`);
+        if (forkResult.detail) client.write(`  \x1b[90m${forkResult.detail}\x1b[0m\r\n`);
+        if (forkResult.suggestions?.length) {
+          client.write('\r\n  Suggestions:\r\n');
+          for (const s of forkResult.suggestions) client.write(`    ${s}\r\n`);
+        }
+        client.write('\r\n  Press any key to return...\r\n');
+        session.pty.attach(client);
+        return;
+      }
+
+      // forkResult.status === 'success'
+      const newSessionId = forkResult.fork.sessionId;
+
+      // Create tmux session using the fork's new UUID
+      const forkedSession = this.createSession(
+        forkName,
+        client,
+        targetUser,
+        'claude',
+        {
+          owner: client.username,
+          hidden: results.hidden ?? session.access.hidden,
+          viewOnly: results.viewOnly ?? session.access.viewOnly,
+          public: results.public ?? session.access.public,
+          allowedUsers: results.allowedUsers ?? session.access.allowedUsers,
+          allowedGroups: results.allowedGroups ?? session.access.allowedGroups,
+          passwordHash: results.password
+            ? createHash('sha256').update(results.password).digest('hex')
+            : null,
+        },
+        ['--resume', newSessionId],  // no --fork-session — claude-fork already copied the JSONL
+        undefined,
+        targetWorkdir,
+      );
+
+      // Store fork metadata
+      const forkMeta = loadSessionMeta(forkedSession.id);
+      if (forkMeta) {
+        forkMeta.pastClaudeSessionIds = [claudeId];
+        forkMeta.forkedFrom = claudeId;
+        forkMeta.forkId = newSessionId;
+        forkMeta.forkDate = new Date().toISOString();
+        forkMeta.forkTool = 'claude-fork';
+        forkMeta.forkSourceProject = session.workingDir;
+        saveSessionMeta(forkedSession.id, forkMeta);
+      }
+
+      console.log(`[cross-fork] ${client.username} forked "${session.name}" (${claudeId}) → "${forkName}" via claude-fork (${newSessionId})`);
+
+      if (forkResult.warnings?.length) {
+        for (const w of forkResult.warnings) console.log(`[cross-fork] warning: ${w}`);
+      }
+
+      this.leaveSession(sessionId, client);
+      this.emit('client-session-change', { client, sessionId: forkedSession.id });
+    } catch (err: any) {
+      client.write('\x1b[2J\x1b[H');
+      client.write(`\r\n  \x1b[31mCross-fork failed: ${err.message}\x1b[0m\r\n\r\n`);
       client.write('  Press any key to return...');
       session.pty.attach(client);
     }

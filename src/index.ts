@@ -25,6 +25,7 @@ import { hostname } from 'os';
 import { LinuxProvisioner } from './auth/provisioner.js';
 import { SocketManager } from './ugo/socket-manager.js';
 import { GroupWatcher } from './ugo/group-watcher.js';
+import { executeCrossFork as runCrossFork, isToolAvailable as isClaudeForkAvailable } from './claude-fork-client.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -125,11 +126,6 @@ function joinSession(client: Client, sessionId: string): void {
   client.write('\x1b[2J\x1b[H');
 
   sessionManager.joinSession(sessionId, client);
-  sessionManager.setOnClientDetach(sessionId, (detachedClient) => {
-    if (detachedClient.id === client.id) {
-      showLobby(client);
-    }
-  });
 }
 
 function renderSessionForm(client: Client): void {
@@ -289,9 +285,6 @@ function finalizeSessionFromResults(client: Client, results: Record<string, any>
       state.mode = 'session';
       state.sessionId = session.id;
     }
-    sessionManager.setOnClientDetach(session.id, (detachedClient) => {
-      if (detachedClient.id === client.id) showLobby(client);
-    });
     client.write('\x1b[2J\x1b[H');
   } catch (err: any) {
     client.write(`\r\nError: ${err.message}\r\n`);
@@ -308,6 +301,12 @@ function finalizeForkFromLobby(client: Client, results: Record<string, any>, sou
   }
 
   const forkName = results.name || `${sourceSession.name}-fork`;
+  const targetWorkdir = results.workingDir || sourceSession.workingDir || '~';
+  const targetUser = results.runAsUser || sourceSession.runAsUser;
+  const sourceWorkdir = sourceSession.workingDir || '~';
+  const workdirChanged = sourceWorkdir !== targetWorkdir;
+  const userChanged = sourceSession.runAsUser !== targetUser;
+
   const access: Partial<SessionAccess> = {
     owner: client.username,
     hidden: results.hidden ?? sourceSession.access.hidden,
@@ -318,34 +317,73 @@ function finalizeForkFromLobby(client: Client, results: Record<string, any>, sou
     passwordHash: results.password ? hashPassword(results.password) : null,
   };
 
+  // Cross-directory or cross-user fork: use claude-fork tool
+  if ((workdirChanged || userChanged) && isClaudeForkAvailable()) {
+    try {
+      client.write('\x1b[2J\x1b[H');
+      client.write('\r\n  \x1b[33mForking session across directories...\x1b[0m\r\n\r\n');
+
+      const forkResult = runCrossFork(claudeId, targetWorkdir, userChanged ? targetUser : undefined);
+
+      if (forkResult.status === 'error') {
+        client.write(`  \x1b[31mFork failed: ${forkResult.error}\x1b[0m\r\n`);
+        if (forkResult.detail) client.write(`  \x1b[90m${forkResult.detail}\x1b[0m\r\n`);
+        client.write('\r\n');
+        setTimeout(() => showLobby(client), 3000);
+        return;
+      }
+
+      const newSessionId = forkResult.fork.sessionId;
+      console.log(`[cross-fork] ${client.username} forking "${sourceSession.name}" (${claudeId}) → "${forkName}" from lobby via claude-fork (${newSessionId})`);
+
+      const forkedSession = sessionManager.createSession(
+        forkName, client, targetUser, 'claude', access,
+        ['--resume', newSessionId],  // no --fork-session
+        undefined, targetWorkdir,
+      );
+
+      const forkMeta = loadSessionMeta(forkedSession.id);
+      if (forkMeta) {
+        forkMeta.pastClaudeSessionIds = [claudeId];
+        forkMeta.forkedFrom = claudeId;
+        forkMeta.forkId = newSessionId;
+        forkMeta.forkDate = new Date().toISOString();
+        forkMeta.forkTool = 'claude-fork';
+        forkMeta.forkSourceProject = sourceWorkdir;
+        saveSessionMeta(forkedSession.id, forkMeta);
+      }
+
+      const state = clientState.get(client.id);
+      if (state) { state.mode = 'session'; state.sessionId = forkedSession.id; }
+      client.write('\x1b[2J\x1b[H');
+      return;
+    } catch (err: any) {
+      client.write(`\r\nCross-fork error: ${err.message}\r\n`);
+      setTimeout(() => showLobby(client), 2000);
+      return;
+    }
+  }
+
+  // Same-directory fork: use built-in --fork-session
   try {
     console.log(`[fork] ${client.username} forking "${sourceSession.name}" (${claudeId}) → "${forkName}" from lobby`);
     const forkedSession = sessionManager.createSession(
-      forkName,
-      client,
-      sourceSession.runAsUser,
-      'claude',
-      access,
+      forkName, client, sourceSession.runAsUser, 'claude', access,
       ['--resume', claudeId, '--fork-session'],
-      undefined,
-      sourceSession.workingDir,
+      undefined, sourceSession.workingDir,
     );
 
-    // Store the source Claude session ID in the fork's metadata
     const forkMeta = loadSessionMeta(forkedSession.id);
     if (forkMeta) {
       forkMeta.pastClaudeSessionIds = [claudeId];
+      forkMeta.forkedFrom = claudeId;
+      forkMeta.forkDate = new Date().toISOString();
+      forkMeta.forkTool = 'builtin';
       saveSessionMeta(forkedSession.id, forkMeta);
     }
 
     const state = clientState.get(client.id);
-    if (state) {
-      state.mode = 'session';
-      state.sessionId = forkedSession.id;
-    }
-    sessionManager.setOnClientDetach(forkedSession.id, (detachedClient) => {
-      if (detachedClient.id === client.id) showLobby(client);
-    });
+    if (state) { state.mode = 'session'; state.sessionId = forkedSession.id; }
     client.write('\x1b[2J\x1b[H');
   } catch (err: any) {
     client.write(`\r\nError: ${err.message}\r\n`);
@@ -487,9 +525,6 @@ function handleResumeIdInput(client: Client, data: Buffer): void {
         state.mode = 'session';
         state.sessionId = session.id;
       }
-      sessionManager.setOnClientDetach(session.id, (detachedClient) => {
-        if (detachedClient.id === client.id) showLobby(client);
-      });
       client.write('\x1b[2J\x1b[H');
     } catch (err: any) {
       client.write(`\r\nError: ${err.message}\r\n`);
@@ -929,13 +964,30 @@ transport.onConnect((client) => {
   showLobby(client);
 });
 
-sessionManager.setOnSessionEnd((sessionId) => {
+// --- SessionManager events ---
+
+sessionManager.on('session-end', (sessionId: string) => {
   for (const state of clientState.values()) {
     if (state.mode === 'session' && state.sessionId === sessionId) {
       showLobby(state.client);
     } else if (state.mode === 'lobby') {
       showLobby(state.client);
     }
+  }
+});
+
+sessionManager.on('client-detach', ({ sessionId, client }: { sessionId: string; client: Client }) => {
+  const state = clientState.get(client.id);
+  if (state) {
+    showLobby(client);
+  }
+});
+
+sessionManager.on('client-session-change', ({ client, sessionId }: { client: Client; sessionId: string }) => {
+  const state = clientState.get(client.id);
+  if (state) {
+    state.mode = 'session';
+    state.sessionId = sessionId;
   }
 });
 
