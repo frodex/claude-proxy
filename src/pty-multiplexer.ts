@@ -413,8 +413,8 @@ export class PtyMultiplexer {
   async warmCache(): Promise<void> {
     try {
       const args = this.socketPath
-        ? ['-S', this.socketPath, 'capture-pane', '-p', '-t', this.tmuxId]
-        : ['capture-pane', '-p', '-t', this.tmuxId];
+        ? ['-S', this.socketPath, 'capture-pane', '-p', '-e', '-t', this.tmuxId]
+        : ['capture-pane', '-p', '-e', '-t', this.tmuxId];
 
       if (this.remoteHost) {
         // Remote: ssh host tmux capture-pane -p -t id
