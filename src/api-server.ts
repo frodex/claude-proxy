@@ -762,7 +762,6 @@ export function startApiServer(options: ApiServerOptions): void {
     const dims = session.pty.getScreenDimensions();
     client.title = composeTitle(session);
     const initial = session.pty.getInitialScreen();
-    console.log(`[initial-screen] ${session.name}: source=${initial.source}`);
 
     let fullState: any;
     if (initial.source === 'cache' && initial.text) {

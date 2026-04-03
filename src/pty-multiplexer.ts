@@ -425,12 +425,10 @@ export class PtyMultiplexer {
         this.screenCache = stdout;
       }
       this.screenCacheReady = true;
-      console.log(`[warm-cache] ${this.tmuxId}: cached ${this.screenCache?.length ?? 0} bytes`);
-    } catch (err: any) {
+    } catch {
       // tmux not ready yet or session gone — no cache, fall back to vterm
       this.screenCache = null;
       this.screenCacheReady = false;
-      console.log(`[warm-cache] ${this.tmuxId}: failed — ${err.message}`);
     }
   }
 
