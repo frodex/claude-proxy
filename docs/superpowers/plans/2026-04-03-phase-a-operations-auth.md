@@ -638,6 +638,8 @@ cd /srv/claude-proxy && git add src/config.ts && git commit -m "security: guard 
 
 ## Task 7: Full integration verification
 
+The operations extraction changes what code runs behind every HTTP route. Even though URLs and JSON shapes are unchanged, subtle differences in error handling, response format, or timing can break callers. **svg-terminal is a real client of this API and must be tested.**
+
 - [ ] **Step 1: Build and run complete test suite**
 
 Run: `cd /srv/claude-proxy && npm run build && npx vitest run`
@@ -651,11 +653,28 @@ ssh -p 3100 localhost
 ```
 Expected: Lobby renders, can create/join sessions
 
-- [ ] **Step 3: Verify auth refusal without secret**
+- [ ] **Step 3: Verify svg-terminal still works against the refactored API**
+
+With claude-proxy running (TCP port still active for this phase):
+
+```bash
+cd /srv/svg-terminal && node server.mjs &
+```
+
+Open dashboard in browser. Verify:
+1. Claude-proxy sessions appear in session discovery (cards render)
+2. Terminal cards show content (not empty — initial screen fetch works)
+3. Focusing a claude-proxy terminal and typing sends keystrokes (input forwarding works)
+4. Creating a session via SSH lobby shows up in the dashboard on refresh
+5. Check `server.mjs` console for errors — any `fetch` failures, JSON parse errors, or WebSocket close codes indicate a response format change
+
+If anything breaks, the operations module is returning different JSON than the old inline handlers. Fix the operations module to match the existing contract — do not change svg-terminal in this phase.
+
+- [ ] **Step 4: Verify auth refusal without secret**
 
 If OAuth providers configured but no `session.secret` in YAML → process exits with fatal message.
 
-- [ ] **Step 4: Commit any fixes**
+- [ ] **Step 5: Commit any fixes**
 
 ```bash
 cd /srv/claude-proxy && git add -A && git commit -m "fix: integration verification adjustments"
