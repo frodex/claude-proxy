@@ -32,13 +32,14 @@ This file is **canonical** for the unified checklist and workspace; it lives in 
 
 Edit this section as you finish items.
 
-| Priority | Task | Spec / doc |
-|----------|------|------------|
-| 1 | Wire OAuth + cookie auth into `startApiServer` | `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
-| 2 | Minimal web login + `GET /api/me` + session list | Same spec §8 + `web/` |
-| 3 | When CP auth is on: svg-terminal `fetch` / WS bridge must send credentials | § Auth boundary below; svg-terminal `docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` |
-| 4 | (Later) Launch profiles / one API path | `docs/research/add-terminal.v04.md` |
+| Priority | Task | Phase | Spec / doc |
+|----------|------|-------|------------|
+| 1 | Wire OAuth + cookie auth into `startApiServer` | W1 | `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
+| 2 | Launch profiles (lobby + API) | W3 | `docs/superpowers/plans/2026-04-03-launch-profiles.md` |
+| 3 | Live web UI (login, lobby, terminal) | W2 | `/srv/svg-terminal/ui-web/ROADMAP.md` Phase W2 |
+| 4 | svg-terminal auth + identity | W4 | PRD-amendment-005 + WS integration spec |
 
+**Full roadmap (W1–W8):** `/srv/svg-terminal/ui-web/ROADMAP.md`  
 **Day-to-day context:** `sessions.md` (this repo, project root)  
 **Client-side integration (stepped):** `/srv/svg-terminal/docs/integration/`
 
@@ -49,6 +50,7 @@ Edit this section as you finish items.
 | Topic | Canonical doc |
 |-------|----------------|
 | **This dashboard** | `docs/integration/UNIFIED-PROJECT.md` (here, claude-proxy) |
+| **Web UI master roadmap (all phases)** | **`/srv/svg-terminal/ui-web/ROADMAP.md`** — W1–W8, dependency graph, every spec/plan linked |
 | Web UI prototype + ANSI reference + auth doc index | `/srv/svg-terminal/ui-web/` (`prototype.html`, `ANSI-UI.md`, `oauth-web-ui-references.md`) |
 | OAuth / HTTP / WS auth | `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
 | Launch profiles & API orchestration | `docs/research/add-terminal.v04.md` |
