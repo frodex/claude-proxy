@@ -49,6 +49,7 @@ Edit this section as you finish items.
 | Topic | Canonical doc |
 |-------|----------------|
 | **This dashboard** | `docs/integration/UNIFIED-PROJECT.md` (here, claude-proxy) |
+| Web UI prototype + ANSI reference + auth doc index | `/srv/svg-terminal/ui-web/` (`prototype.html`, `ANSI-UI.md`, `oauth-web-ui-references.md`) |
 | OAuth / HTTP / WS auth | `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
 | Launch profiles & API orchestration | `docs/research/add-terminal.v04.md` |
 | Operational conventions | `sessions.md` |
