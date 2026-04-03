@@ -1,6 +1,14 @@
 port: 3100
 host: 0.0.0.0
 
+# HTTP + WebSocket API (browser, OAuth). Omit `port` when socket-only + `public_base_url` for OAuth.
+api:
+  port: 3101
+  host: 127.0.0.1
+  # Unix socket JSON-RPC (svg-terminal, local integrations)
+  socket: /run/claude-proxy/api.sock
+  socket_mode: 432 # octal 0660 (rw-rw----)
+
 auth:
   authorized_keys: ~/.ssh/authorized_keys
   # OAuth providers (uncomment and configure to enable web auth)

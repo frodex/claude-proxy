@@ -73,6 +73,8 @@ interface ApiServerOptions {
   provisioner?: Provisioner;
   cookieSecret?: string;
   cookieMaxAge?: number;
+  /** Shared with SocketServer (Phase C); if omitted, a new ProxyOperations is created */
+  operations?: ProxyOperations;
 }
 
 interface StreamClient {
@@ -109,12 +111,12 @@ function errorResponse(res: ServerResponse, err: any): void {
 export function startApiServer(options: ApiServerOptions): void {
   const { port, host, sessionManager, config, staticDir, dirScanner,
     oauthManager, githubAdapter, userStore, provisioner,
-    cookieSecret, cookieMaxAge } = options;
+    cookieSecret, cookieMaxAge, operations: operationsOption } = options;
   const streamClients: Map<WebSocket, StreamClient> = new Map();
   const pendingOAuthStates: Map<string, { provider: string; createdAt: number }> = new Map();
   const apiAuthRequired = !!cookieSecret;
 
-  const ops = new ProxyOperations(
+  const ops = operationsOption ?? new ProxyOperations(
     sessionManager, config, dirScanner,
     oauthManager, githubAdapter, userStore, provisioner,
   );

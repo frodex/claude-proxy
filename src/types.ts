@@ -33,6 +33,8 @@ export interface Config {
     port?: number;
     host?: string;
     socket?: string;
+    socket_mode?: number;
+    socket_group?: string;
     public_base_url?: string;
     cors_origin?: string;
     auth?: {

@@ -23,6 +23,8 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { hostname } from 'os';
 import { LinuxProvisioner } from './auth/provisioner.js';
+import { ProxyOperations } from './operations.js';
+import { SocketServer } from './socket-server.js';
 import { OAuthManager } from './auth/oauth.js';
 import { GitHubAdapter } from './auth/github-adapter.js';
 import { SQLiteUserStore } from './auth/user-store.js';
@@ -75,6 +77,9 @@ const clientState: Map<string, {
 }> = new Map();
 
 const creationFlows: Map<string, { flow: FlowEngine; isResume?: boolean; isFork?: boolean; sourceSessionId?: string; claudeId?: string }> = new Map();
+
+/** Unix socket API (Phase C); stopped on SIGINT/SIGTERM */
+let socketServer: SocketServer | undefined;
 
 function hashPassword(pw: string): string {
   const salt = randomBytes(16).toString('hex');
@@ -1004,6 +1009,9 @@ sessionManager.on('client-session-change', ({ client, sessionId }: { client: Cli
 
 process.on('SIGINT', async () => {
   console.log('\nShutting down (sessions will persist in tmux)...');
+  try {
+    socketServer?.stop();
+  } catch { /* ignore */ }
   sessionManager.detachAll();
   await transport.stop();
   process.exit(0);
@@ -1011,6 +1019,9 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received (sessions will persist in tmux)...');
+  try {
+    socketServer?.stop();
+  } catch { /* ignore */ }
   sessionManager.detachAll();
   await transport.stop();
   process.exit(0);
@@ -1018,8 +1029,7 @@ process.on('SIGTERM', async () => {
 
 transport.start();
 
-// Start API server for browser clients
-const apiPort = config.api?.port ?? 3101;
+// HTTP + WebSocket API (optional) and Unix socket API (optional)
 const apiHost = config.api?.host ?? '127.0.0.1';
 const webDir = resolve(__dirname, '..', 'web');
 
@@ -1028,7 +1038,8 @@ mkdirSync(resolve(__dirname, '..', 'data'), { recursive: true });
 const userStore = new SQLiteUserStore(resolve(__dirname, '..', 'data', 'users.db'));
 
 const providers = config.auth?.providers;
-const callbackBase = config.api?.public_base_url || `http://127.0.0.1:${apiPort}`;
+const callbackBase =
+  config.api?.public_base_url || `http://127.0.0.1:${config.api?.port ?? 3101}`;
 
 let oauthManager: OAuthManager | undefined;
 if (providers?.google || providers?.microsoft) {
@@ -1056,17 +1067,52 @@ if (!cookieSecret && config.api?.auth?.required) {
   process.exit(1);
 }
 
-startApiServer({
-  port: apiPort,
-  host: apiHost,
+const proxyOperations = new ProxyOperations(
   sessionManager,
   config,
-  staticDir: webDir,
   dirScanner,
   oauthManager,
   githubAdapter,
   userStore,
   provisioner,
-  cookieSecret,
-  cookieMaxAge,
-});
+);
+
+/** TCP: default 3101 when `api` is omitted; if `api` exists but `port` is omitted, TCP is disabled (socket-only). */
+const tcpPort: number | undefined =
+  config.api === undefined ? 3101 : config.api.port;
+
+if (tcpPort !== undefined) {
+  startApiServer({
+    port: tcpPort,
+    host: apiHost,
+    sessionManager,
+    config,
+    staticDir: webDir,
+    dirScanner,
+    oauthManager,
+    githubAdapter,
+    userStore,
+    provisioner,
+    cookieSecret,
+    cookieMaxAge,
+    operations: proxyOperations,
+  });
+} else {
+  console.log('[api] TCP port not configured — HTTP/WebSocket API disabled (socket only)');
+}
+
+const socketPath = config.api?.socket;
+if (socketPath) {
+  socketServer = new SocketServer({
+    socketPath,
+    socketMode: config.api?.socket_mode,
+    socketGroup: config.api?.socket_group,
+    operations: proxyOperations,
+    sessionManager,
+  });
+  socketServer.start();
+}
+
+if (!socketPath && tcpPort === undefined) {
+  console.warn('[api] No socket path and no TCP port — programmatic API unreachable');
+}
