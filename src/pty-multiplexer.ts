@@ -251,9 +251,9 @@ export class PtyMultiplexer {
       if (this.settleTimer) clearTimeout(this.settleTimer);
       this.settleTimer = setTimeout(() => {
         this.settled = true;
-        // Invalidate cache — vterm is now authoritative
-        this.screenCache = null;
-        this.screenCacheReady = false;
+        // Don't invalidate cache here — getInitialScreen() prefers vterm
+        // when settled, so cache is simply unused. Keeping it as fallback
+        // in case settle is brief (new data arrives, resets settled=false).
       }, 200);
     });
 
@@ -425,10 +425,12 @@ export class PtyMultiplexer {
         this.screenCache = stdout;
       }
       this.screenCacheReady = true;
-    } catch {
+      console.log(`[warm-cache] ${this.tmuxId}: cached ${this.screenCache?.length ?? 0} bytes`);
+    } catch (err: any) {
       // tmux not ready yet or session gone — no cache, fall back to vterm
       this.screenCache = null;
       this.screenCacheReady = false;
+      console.log(`[warm-cache] ${this.tmuxId}: failed — ${err.message}`);
     }
   }
 
