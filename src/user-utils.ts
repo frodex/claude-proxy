@@ -1,18 +1,19 @@
 // src/user-utils.ts
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync, readdirSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { validateUsername } from './auth/provisioner.js';
 
 /**
  * Get users who have a ~/.claude/ directory (have used Claude)
  */
 export function getClaudeUsers(): string[] {
   try {
-    const output = execSync("getent passwd | cut -d: -f1,6", { encoding: 'utf-8' });
+    const output = execFileSync('getent', ['passwd'], { encoding: 'utf-8' });
     return output.trim().split('\n')
       .map(line => {
-        const [username, home] = line.split(':');
-        return { username, home };
+        const parts = line.split(':');
+        return { username: parts[0], home: parts[5] };
       })
       .filter(({ home }) => home && existsSync(`${home}/.claude`))
       .map(({ username }) => username);
@@ -26,7 +27,7 @@ export function getClaudeUsers(): string[] {
  */
 export function getClaudeGroups(): Array<{ name: string; systemName: string; members: string[] }> {
   try {
-    const output = execSync("getent group", { encoding: 'utf-8' });
+    const output = execFileSync('getent', ['group'], { encoding: 'utf-8' });
     return output.trim().split('\n')
       .map(line => {
         const parts = line.split(':');
@@ -52,7 +53,8 @@ export function getClaudeGroups(): Array<{ name: string; systemName: string; mem
 export function isUserInGroup(username: string, groupDisplayName: string): boolean {
   const systemGroup = `cp-${groupDisplayName}`;
   try {
-    const output = execSync(`id -nG ${username}`, { encoding: 'utf-8' }).trim();
+    validateUsername(username);
+    const output = execFileSync('id', ['-nG', username], { encoding: 'utf-8' }).trim();
     return output.split(' ').includes(systemGroup);
   } catch {
     return false;
@@ -185,7 +187,8 @@ export function getUserClaudeSessions(username: string): ClaudeSession[] {
 
 function getUserHome(username: string): string | null {
   try {
-    const result = execSync(`getent passwd ${username}`, { encoding: 'utf-8' }).trim();
+    validateUsername(username);
+    const result = execFileSync('getent', ['passwd', username], { encoding: 'utf-8' }).trim();
     const parts = result.split(':');
     return parts[5] ?? null;
   } catch {

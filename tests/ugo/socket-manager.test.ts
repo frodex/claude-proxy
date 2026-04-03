@@ -1,12 +1,12 @@
 // tests/ugo/socket-manager.test.ts
 import { test, expect, vi, beforeEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { readdirSync } from 'fs';
 import { SocketManager } from '../../src/ugo/socket-manager.js';
 import type { Provisioner } from '../../src/auth/types.js';
 
 vi.mock('child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
 vi.mock('fs', async () => {
@@ -23,7 +23,11 @@ vi.mock('fs', async () => {
   };
 });
 
-const mockExec = vi.mocked(execSync);
+vi.mock('../../src/auth/provisioner.js', () => ({
+  validateUsername: vi.fn(),
+}));
+
+const mockExec = vi.mocked(execFileSync);
 
 let mockProvisioner: Provisioner;
 let manager: SocketManager;
@@ -54,11 +58,15 @@ test('createSessionSocket calls tmux with -S flag', () => {
   mockExec.mockReturnValue('' as any);
   manager.createSessionSocket('myproject', 'greg', { cols: 80, rows: 24 }, 'private');
 
-  const calls = mockExec.mock.calls.map(c => c[0] as string);
-  const tmuxCall = calls.find(c => c.includes('tmux') && c.includes('-S'));
+  const suCalls = mockExec.mock.calls.filter(c => c[0] === 'su');
+  const tmuxCall = suCalls.find(c => {
+    const args = c[1] as string[];
+    return args.some(a => a.includes('tmux') && a.includes('-S'));
+  });
   expect(tmuxCall).toBeTruthy();
-  expect(tmuxCall).toContain('/tmp/test-sockets/cp-myproject.sock');
-  expect(tmuxCall).toContain('su - greg');
+  const cmdArg = (tmuxCall![1] as string[]).find(a => a.includes('tmux'));
+  expect(cmdArg).toContain('/tmp/test-sockets/cp-myproject.sock');
+  expect(tmuxCall![1]).toContain('greg');
 });
 
 test('createSessionSocket creates session group for shared mode', () => {
@@ -81,38 +89,52 @@ test('grantAccess calls server-access -a with write', () => {
   mockExec.mockReturnValue('' as any);
   manager.grantAccess('myproject', 'greg', 'frodex', 'write');
 
-  const calls = mockExec.mock.calls.map(c => c[0] as string);
-  const accessCall = calls.find(c => c.includes('server-access'));
+  const suCalls = mockExec.mock.calls.filter(c => c[0] === 'su');
+  const accessCall = suCalls.find(c => {
+    const args = c[1] as string[];
+    return args.some(a => typeof a === 'string' && a.includes('server-access'));
+  });
   expect(accessCall).toBeTruthy();
-  expect(accessCall).toContain('-a frodex');
-  expect(accessCall).toContain('-w');
+  const cmdArg = (accessCall![1] as string[]).find(a => a.includes('server-access'))!;
+  expect(cmdArg).toContain('-a frodex');
+  expect(cmdArg).toContain('-w');
 });
 
 test('grantAccess calls server-access -a with read-only', () => {
   mockExec.mockReturnValue('' as any);
   manager.grantAccess('myproject', 'greg', 'viewer', 'read');
 
-  const calls = mockExec.mock.calls.map(c => c[0] as string);
-  const accessCall = calls.find(c => c.includes('server-access'));
+  const suCalls = mockExec.mock.calls.filter(c => c[0] === 'su');
+  const accessCall = suCalls.find(c => {
+    const args = c[1] as string[];
+    return args.some(a => typeof a === 'string' && a.includes('server-access'));
+  });
   expect(accessCall).toBeTruthy();
-  expect(accessCall).toContain('-a viewer');
-  expect(accessCall).toContain('-r');
+  const cmdArg = (accessCall![1] as string[]).find(a => a.includes('server-access'))!;
+  expect(cmdArg).toContain('-a viewer');
+  expect(cmdArg).toContain('-r');
 });
 
 test('revokeAccess calls server-access -d', () => {
   mockExec.mockReturnValue('' as any);
   manager.revokeAccess('myproject', 'greg', 'frodex');
 
-  const calls = mockExec.mock.calls.map(c => c[0] as string);
-  expect(calls.some(c => c.includes('server-access') && c.includes('-d frodex'))).toBe(true);
+  const suCalls = mockExec.mock.calls.filter(c => c[0] === 'su');
+  expect(suCalls.some(c => {
+    const args = c[1] as string[];
+    return args.some(a => typeof a === 'string' && a.includes('server-access') && a.includes('-d frodex'));
+  })).toBe(true);
 });
 
 test('destroySessionSocket kills tmux and cleans up', () => {
   mockExec.mockReturnValue('' as any);
   manager.destroySessionSocket('myproject', 'greg');
 
-  const calls = mockExec.mock.calls.map(c => c[0] as string);
-  expect(calls.some(c => c.includes('kill-server') || c.includes('kill-session'))).toBe(true);
+  const suCalls = mockExec.mock.calls.filter(c => c[0] === 'su');
+  expect(suCalls.some(c => {
+    const args = c[1] as string[];
+    return args.some(a => typeof a === 'string' && (a.includes('kill-server') || a.includes('kill-session')));
+  })).toBe(true);
 });
 
 test('discoverSockets scans directory for alive sessions', () => {
@@ -123,4 +145,8 @@ test('discoverSockets scans directory for alive sessions', () => {
 
   const alive = manager.discoverSockets();
   expect(alive).toEqual(['/tmp/test-sockets/cp-proj1.sock']);
+
+  const tmuxCalls = mockExec.mock.calls.filter(c => c[0] === 'tmux');
+  expect(tmuxCalls.length).toBe(2);
+  expect(tmuxCalls[0][1]).toEqual(['-S', '/tmp/test-sockets/cp-proj1.sock', 'list-sessions']);
 });

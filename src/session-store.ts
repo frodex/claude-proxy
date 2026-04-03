@@ -1,7 +1,7 @@
 // src/session-store.ts
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import type { SessionAccess } from './types.js';
 
@@ -20,6 +20,11 @@ interface StoredSession {
   access: SessionAccess;
   claudeSessionId?: string;      // current Claude Code session ID
   pastClaudeSessionIds?: string[]; // previous session IDs (for fork history)
+  forkedFrom?: string;            // source Claude session ID used in fork
+  forkId?: string;                // new UUID from claude-fork tool (or Claude's internal fork ID)
+  forkDate?: string;              // ISO timestamp of when fork was created
+  forkTool?: 'builtin' | 'claude-fork';  // which fork mechanism was used
+  forkSourceProject?: string;     // original project directory (for cross-dir forks)
 }
 
 export function ensureStoreDir(): void {
@@ -63,12 +68,17 @@ export function listStoredSessions(): StoredSession[] {
 /**
  * List tmux session names on a remote host (or locally if host is undefined)
  */
+const VALID_HOSTNAME = /^[a-zA-Z0-9._-]+$/;
+
 export function listTmuxSessionNames(remoteHost?: string): Set<string> {
   try {
-    const cmd = remoteHost
-      ? `ssh ${remoteHost} "tmux list-sessions -F '#{session_name}' 2>/dev/null"`
-      : "tmux list-sessions -F '#{session_name}' 2>/dev/null";
-    const output = execSync(cmd, { encoding: 'utf-8', timeout: 5000 }).trim();
+    let output: string;
+    if (remoteHost) {
+      if (!VALID_HOSTNAME.test(remoteHost)) throw new Error(`Invalid hostname: "${remoteHost}"`);
+      output = execFileSync('ssh', [remoteHost, 'tmux', 'list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8', timeout: 5000 }).trim();
+    } else {
+      output = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf-8', timeout: 5000 }).trim();
+    }
     return new Set(output ? output.split('\n') : []);
   } catch {
     return new Set();
@@ -101,8 +111,10 @@ export function listDeadSessions(): StoredSession[] {
 export function discoverClaudeSessionId(tmuxId: string, socketPath?: string, runAsUser?: string): string | null {
   try {
     // Get the pane PID from tmux
-    const prefix = socketPath ? `tmux -S ${socketPath}` : 'tmux';
-    const panePid = execSync(`${prefix} list-panes -t ${tmuxId} -F '#{pane_pid}'`, { encoding: 'utf-8', timeout: 3000 }).trim();
+    const tmuxArgs = socketPath
+      ? ['-S', socketPath, 'list-panes', '-t', tmuxId, '-F', '#{pane_pid}']
+      : ['list-panes', '-t', tmuxId, '-F', '#{pane_pid}'];
+    const panePid = execFileSync('tmux', tmuxArgs, { encoding: 'utf-8', timeout: 3000 }).trim();
     if (!panePid) return null;
 
     // Walk process tree to find 'claude' process
@@ -123,8 +135,7 @@ export function discoverClaudeSessionId(tmuxId: string, socketPath?: string, run
 
 function findClaudePid(parentPid: number): number | null {
   try {
-    // Get all children recursively
-    const output = execSync(`ps -o pid,cmd --ppid ${parentPid} --no-headers 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    const output = execFileSync('ps', ['-o', 'pid,cmd', '--ppid', String(parentPid), '--no-headers'], { encoding: 'utf-8' }).trim();
     for (const line of output.split('\n')) {
       const match = line.trim().match(/^(\d+)\s+(.+)/);
       if (!match) continue;
@@ -142,7 +153,7 @@ function findClaudePid(parentPid: number): number | null {
 
 function getUserHome(username: string): string {
   try {
-    return execSync(`getent passwd ${username}`, { encoding: 'utf-8' }).trim().split(':')[5] || '/root';
+    return execFileSync('getent', ['passwd', username], { encoding: 'utf-8' }).trim().split(':')[5] || '/root';
   } catch {
     return '/root';
   }
