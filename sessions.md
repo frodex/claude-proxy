@@ -62,7 +62,7 @@
 
 ## Pending Items
 
-[2026-04-03] **Execute Phase A** — operations extraction + auth wiring + security hardening (plan written, approved)
+[2026-04-03] ~~Execute Phase A~~ — **DONE.** Operations module, auth wired, security hardening, 293 tests passing, restart verified
 [2026-04-03] **Execute Phase C** — Unix socket adapter + svg-terminal migration (plan written, depends on Phase A)
 [2026-04-03] **Execute launch profiles** — independent, can run parallel with Phase A (plan written)
 [2026-04-03] **Security remediation pass** — ~95 out-of-scope findings (pty-multiplexer, scripts, systemd, svg-terminal) tracked in research v03 §13
@@ -76,7 +76,10 @@
 
 ## Session History (most recent first)
 
-### 2026-04-03 — Architecture research + implementation planning (full session)
+### 2026-04-03 — Architecture research + planning + Phase A execution
+- **Phase A completed** (by separate agent): operations.ts extracted from api-server.ts, auth modules hardened + wired, execSync sweep, scrypt passwords, prototype pollution guard. 293 tests, 34 files. Restart verified — sessions rediscovered, API returns correct JSON.
+
+### 2026-04-03 — Architecture research + implementation planning (earlier in session)
 - **Launch profiles research:** Stepped through v01–v05 with NOTES round-trips. Concrete profiles (shell/claude/cursor), Cursor session-ID as sub-project, form field gating by capability, two-step lobby, orchestration vs stateless API contract, gap analysis
 - **OAuth wiring spec:** Full spec for wiring dormant auth modules into `startApiServer` — ACL parity with SSH, protected routes, WS auth, `api.auth.required` flag
 - **Unix socket research:** Stepped through v01–v03. First-principles design: operations module (not HTTP-over-socket), JSON-RPC protocol, layered OAuth (CP standalone → svg-terminal hooks). Security audit (189 findings) folded: ~55 in-path mapped to refactor tasks, ~95 out-of-scope cataloged
