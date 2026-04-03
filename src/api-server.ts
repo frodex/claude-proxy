@@ -670,15 +670,34 @@ export function startApiServer(options: ApiServerOptions): void {
         return;
       }
 
-      const buffer = session.pty.getBuffer();
       const dims = session.pty.getScreenDimensions();
-      const title = session.currentTitle || session.name;
+      const title = composeTitle(session);
+      const initial = session.pty.getInitialScreen();
 
-      // Support line range query: ?start=N&end=M
-      const start = parseInt(url.searchParams.get('start') || String(dims.baseY));
-      const end = parseInt(url.searchParams.get('end') || String(dims.baseY + dims.rows));
+      let state: any;
+      if (initial.source === 'cache' && initial.text) {
+        // Cache path — ANSI-escaped text from tmux capture-pane -e.
+        const textLines = initial.text.split('\n');
+        const lines: Array<{ spans: any[] }> = [];
+        for (let i = 0; i < dims.rows; i++) {
+          const raw = textLines[i] || '';
+          lines.push({ spans: raw ? parseAnsiLine(raw) : [] });
+        }
+        state = {
+          width: dims.cols,
+          height: dims.rows,
+          cursor: { x: 0, y: 0 },
+          title,
+          lines,
+        };
+      } else {
+        // vterm path — respect line range query params
+        const buffer = initial.buffer ?? session.pty.getBuffer();
+        const start = parseInt(url.searchParams.get('start') || String(dims.baseY));
+        const end = parseInt(url.searchParams.get('end') || String(dims.baseY + dims.rows));
+        state = bufferToScreenState(buffer, dims.cols, end - start, title);
+      }
 
-      const state = bufferToScreenState(buffer, dims.cols, end - start, title);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(state));
       return;
@@ -747,14 +766,12 @@ export function startApiServer(options: ApiServerOptions): void {
 
     let fullState: any;
     if (initial.source === 'cache' && initial.text) {
-      // Cache path — plain text from tmux capture-pane (no ANSI colors).
-      // Good enough for initial render; 30ms delta updates will replace
-      // with properly styled content once vterm settles.
+      // Cache path — ANSI-escaped text from tmux capture-pane -e.
       const textLines = initial.text.split('\n');
-      const lines: Array<{ spans: Array<{ text: string }> }> = [];
+      const lines: Array<{ spans: any[] }> = [];
       for (let i = 0; i < dims.rows; i++) {
-        const text = textLines[i] || '';
-        lines.push({ spans: text ? [{ text }] : [] });
+        const raw = textLines[i] || '';
+        lines.push({ spans: raw ? parseAnsiLine(raw) : [] });
       }
       fullState = {
         width: dims.cols,
