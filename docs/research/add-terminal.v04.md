@@ -3,7 +3,7 @@
 **Date:** 2026-04-03  
 **Status:** In Progress — research for PRD amendment & implementation plan  
 **Preceding:** `add-terminal.v03.md`  
-**Changes from v03:** **Unified project index** — cross-repo stepped specs with svg-terminal are canonical under `/srv/svg-terminal/docs/integration/` (see `2026-04-02-claude-proxy-partial-screen-fix.v01.md` §0). Future PRD/amendment narrative that spans both repos should anchor there; this file stays claude-proxy launch-profile research.  
+**Changes from v03:** **Unified project** — dashboard **`docs/integration/UNIFIED-PROJECT.md`** (platform-first; svg-terminal depends on CP for integration). Client stepped notes: `/srv/svg-terminal/docs/integration/`. This file stays launch-profile research only.  
 
 ---
 
@@ -18,7 +18,7 @@
 
 Progression: `diff -u docs/research/add-terminal.v03.md docs/research/add-terminal.v04.md`
 
-**Unified project (svg-terminal):** `/srv/svg-terminal/docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` — living index for CP ↔ svg-terminal docs.
+**Unified project:** `docs/integration/UNIFIED-PROJECT.md` — client index: `/srv/svg-terminal/docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md`.
 
 ---
 

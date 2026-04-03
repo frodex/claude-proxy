@@ -4,7 +4,7 @@
 **Status:** Draft — implementation checklist  
 **Purpose:** Fully specify how OAuth, session cookies, and HTTP/WebSocket API identity align so the web UI can be built and tested on real auth. Supersedes scattered TODOs in handoff docs with one executable contract.
 
-**Unified project index:** Cross-repo integration and stepped docs with **svg-terminal** are canonical under **`/srv/svg-terminal/docs/integration/`** (see `2026-04-02-claude-proxy-partial-screen-fix.v01.md` §0). When OAuth wiring ships, update that index and svg-terminal’s WebSocket integration spec for authenticated `fetch` / WS to claude-proxy.
+**Unified project:** Dashboard and checklist **`docs/integration/UNIFIED-PROJECT.md`** (claude-proxy — platform-first). svg-terminal holds **client** integration stepped files under its `docs/integration/`. When OAuth wiring ships, update svg-terminal’s WS/screen `fetch` paths per dependency note there.
 
 **Related:** `docs/integration/PRD-claude-proxy-as-built-v2.1.md`, `docs/superpowers/plans/2026-03-29-auth-plan-c-oauth.md`, `docs/superpowers/plans/2026-03-31-handoff-todos-v3.md` §6, `sessions.md`
 
