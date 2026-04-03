@@ -17,9 +17,11 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 
 **Next major refactor (APPROVED):** TUI widget system — widgets (state machines) + flow engine (step chaining) + renderers (ANSI/JSON/spans). Widgets produce structured state, renderers convert per transport. Browser JS renders HTML from JSON over WebSocket. SSH gets server-side ANSI rendering. svg-terminal benefits from semantic UI data (knows "list picker with cursor on item 3" not just terminal text). Single spec covering all three layers.
 
-**In progress (research → PRD amendment → plan):** Unified **launch profiles** for session creation — one internal terminal/session pipeline; lobby options such as “New Claude session”, “New Cursor session”, “New terminal” (and future tools) layer **profile** (command, args, form gates, backfill, remote strategy) over the same flow. **Baseline (frozen):** `docs/research/add-terminal.md`. **Active stepped copy:** `docs/research/add-terminal.v03.md` — **§3.4** orchestration (ANSI stepped / web async) vs **stateless API**; **§8** gap analysis. New discoveries: `cp` latest stepped → `add-terminal.v04.md`, edit only the new file; see Operational Conventions. Feature work must not multiply parallel `finalize*` / `startNewSession*` code paths; extend a single path via profile registry.
+**In progress (research → PRD amendment → plan):** Unified **launch profiles** for session creation — one internal terminal/session pipeline; lobby options such as “New Claude session”, “New Cursor session”, “New terminal” (and future tools) layer **profile** (command, args, form gates, backfill, remote strategy) over the same flow. **Baseline (frozen):** `docs/research/add-terminal.md`. **Active stepped copy:** `docs/research/add-terminal.v04.md` — **§3.4** orchestration vs **stateless API**; **§8** gap analysis; v04 points to **svg-terminal** unified integration index. New discoveries: `cp` → `add-terminal.v05.md`; see Operational Conventions. Feature work must not multiply parallel `finalize*` / `startNewSession*` code paths; extend a single path via profile registry.
 
 **Future:** svg-terminal integration, Docker packaging with Vault, web onboarding, Cloudflare Access auth, user registration/invite system.
+
+**Unified project docs (2026-04-03):** Cross-repo specs and stepped integration work with **svg-terminal** live under **`/srv/svg-terminal/docs/integration/`** as the canonical home. Example: `docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` (index + partial-screen narrative). New unified narratives or amendment queues should be authored there first; this repo keeps **claude-proxy–specific** research (`docs/research/`, `docs/superpowers/specs/`) and links outward.
 
 ---
 
@@ -37,7 +39,7 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 ## Key Technical Decisions
 
 [2026-04-03] Session creation should converge on **one code path** parameterized by **launch profile** (command/args, form visibility, Claude-ID backfill, remote launcher), not separate flows per tool — aligns with “no duplicated patterns” convention
-[2026-04-03] **Orchestration ≠ API contract:** SSH uses stepped in-process flows; web is async. HTTP operations must remain **stateless** (validate body per request; no server wizard session). Shared **DTO + validator + executor** called from flow submit and `api-server.ts` — see `docs/research/add-terminal.v03.md` §3.4, §8
+[2026-04-03] **Orchestration ≠ API contract:** SSH uses stepped in-process flows; web is async. HTTP operations must remain **stateless** (validate body per request; no server wizard session). Shared **DTO + validator + executor** called from flow submit and `api-server.ts` — see `docs/research/add-terminal.v04.md` §3.4, §8
 [2026-03-28] tmux wraps Claude (not node-pty directly) — sessions survive proxy restarts
 [2026-03-28] ESM modules throughout — all imports use `import`, not `require()`
 [2026-03-28] @xterm/headless for screen buffer — write() is async, flush before reading
@@ -66,7 +68,7 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 
 ## Pending Items
 
-[2026-04-03] Add terminal / launch profiles — approve stepped research (`docs/research/add-terminal.v03.md`), amend PRD (**orchestration vs API** + gaps), then implement (shared session-request module + profiles + lobby + API + persistence + remote)
+[2026-04-03] Add terminal / launch profiles — approve stepped research (`docs/research/add-terminal.v04.md`), amend PRD (**orchestration vs API** + gaps), then implement (shared session-request module + profiles + lobby + API + persistence + remote)
 [2026-04-03] **OAuth + web API wiring** — full spec: `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` (index.ts → startApiServer, ACL parity, WS auth, `api.public_base_url`, feature flag `api.auth.required`)
 [2026-03-29] TUI widget system refactor — extract duplicated picker/input/nav patterns
 [2026-03-30] Configure OAuth providers (Google, Microsoft, GitHub) with real client IDs
@@ -83,8 +85,8 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 
 ### 2026-04-03 — Add terminal / launch profiles (research)
 - Goal: menu options for Claude vs Cursor vs plain terminal (and extensibility) without forking creation logic
-- Artifacts: `add-terminal.v03.md` adds **§3.4** orchestration vs stateless API, **§8** gap table (shared DTO/executor missing today)
-- Next: approve v03 → PRD amend → plan → code
+- Artifacts: `add-terminal.v04.md` (unified index pointer); svg-terminal `docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` — canonical cross-repo integration home
+- Next: approve v04 → PRD amend → plan → code
 
 ### 2026-04-01 — Unified Session Screen Implementation (15 tasks, 5 phases)
 - Phase 1: Widget field states (6 states + ANSI colors) + locked option on all widgets
