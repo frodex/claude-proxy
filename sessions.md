@@ -7,7 +7,7 @@
 
 **Repo:** claude-proxy @ /srv/claude-proxy
 **Branch:** dev
-**What this is:** SSH multiplexer for shared Claude Code terminal sessions. Multiple users connect via SSH, share live Claude sessions, and collaborate in real-time. Web API on port 3101 serves session data for browser clients (svg-terminal integration). tmux-backed persistent sessions survive disconnects and proxy restarts.
+**What this is:** SSH multiplexer for shared Claude Code terminal sessions. Multiple users connect via SSH, share live Claude sessions, and collaborate in real-time. **HTTP/WebSocket API** on `127.0.0.1:3101` serves browsers/OAuth; **Unix socket** `/run/claude-proxy/api.sock` serves local JSON-RPC (svg-terminal integration). tmux-backed persistent sessions survive disconnects and proxy restarts.
 
 ---
 
@@ -15,9 +15,9 @@
 
 **Unified project (2026-04-03):** **Start here:** `docs/integration/UNIFIED-PROJECT.md` — dashboard, doc map, checklist. Workspace: **`unified.code-workspace`** (repo root) opens claude-proxy + svg-terminal. **claude-proxy is the platform** (runs standalone); svg-terminal is a client (depends on CP for `cp-*` integration).
 
-**Architecture refactor (approved, plans written, ready to execute):**
-1. **Phase A** — Extract operations module from `api-server.ts`, wire dormant auth modules, fix ~40 security findings in-path. Plan: `docs/superpowers/plans/2026-04-03-phase-a-operations-auth.md` (7 tasks)
-2. **Phase C** — Unix socket adapter (JSON-RPC, not HTTP-over-socket), svg-terminal migrates from `fetch()`/`WebSocket()` to socket client. Plan: `docs/superpowers/plans/2026-04-03-phase-c-unix-socket.md` (6 tasks)
+**Architecture refactor:**
+1. **Phase A** — **DONE.** Operations module, auth wiring, security hardening. Plan: `docs/superpowers/plans/2026-04-03-phase-a-operations-auth.md`
+2. **Phase C** — **DONE** on this stack: Unix socket JSON-RPC + svg-terminal socket client; host runs **`svg-terminal.service`** (systemd) after **`claude-proxy.service`**. Plan: `docs/superpowers/plans/2026-04-03-phase-c-unix-socket.md`. **PRD:** `/srv/svg-terminal/docs/PRD-amendment-006.md`. **Journal:** `docs/research/2026-04-03-v0.1-phase-c-socket-systemd-journal.md`
 3. **Launch profiles** (independent, parallel) — lobby offers terminal/Claude/Cursor; one internal flow. Plan: `docs/superpowers/plans/2026-04-03-launch-profiles.md` (8 tasks)
 
 **Master roadmap (W1–W8):** `/srv/svg-terminal/ui-web/ROADMAP.md` — phases through full web UI, user management, remote profiles, Cursor session-ID, Phase D merge.
@@ -63,7 +63,7 @@
 ## Pending Items
 
 [2026-04-03] ~~Execute Phase A~~ — **DONE.** Operations module, auth wired, security hardening, 293 tests passing, restart verified
-[2026-04-03] **Execute Phase C** — Unix socket adapter + svg-terminal migration (plan written, depends on Phase A)
+[2026-04-03] ~~Execute Phase C~~ — **DONE.** Socket server, svg-terminal client, `api.socket` in YAML, live restart + `svg-terminal.service` on host. PRD-006 + journal above.
 [2026-04-03] **Execute launch profiles** — independent, can run parallel with Phase A (plan written)
 [2026-04-03] **Security remediation pass** — ~95 out-of-scope findings (pty-multiplexer, scripts, systemd, svg-terminal) tracked in research v03 §13
 [2026-04-03] Phase D: standalone login HTML, cookie encryption, CSRF, PKCE (plan not yet written)
@@ -75,6 +75,11 @@
 ---
 
 ## Session History (most recent first)
+
+### 2026-04-03 — Phase C shipped + svg-terminal systemd + docs
+- Unix socket API (`socket-protocol.ts`, `socket-server.ts`), shared `ProxyOperations`, resize/scroll on socket; `claude-proxy.yaml` enables `api.socket` + TCP 3101
+- svg-terminal: `server.mjs` uses `CLAUDE_PROXY_SOCKET`; `/etc/systemd/system/svg-terminal.service` — `After=claude-proxy.service`, `PORT=3200`, enabled on boot
+- Docs: PRD-amendment-006 (svg-terminal), research journal (this repo), `UNIFIED-PROJECT.md` map row; this `sessions.md` updated
 
 ### 2026-04-03 — Architecture research + planning + Phase A execution
 - **Phase A completed** (by separate agent): operations.ts extracted from api-server.ts, auth modules hardened + wired, execSync sweep, scrypt passwords, prototype pollution guard. 293 tests, 34 files. Restart verified — sessions rediscovered, API returns correct JSON.
