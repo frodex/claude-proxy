@@ -1,5 +1,5 @@
 # sessions.md — Live Project Context
-# Backed up as sessions.md.{SESSION}-{STEP} before each optimize
+# Backed up as sessions.md.2026-04-03 before optimize
 
 ---
 
@@ -7,21 +7,24 @@
 
 **Repo:** claude-proxy @ /srv/claude-proxy
 **Branch:** dev
-**What this is:** SSH multiplexer for shared Claude Code terminal sessions. Multiple users connect via SSH, share live Claude sessions, and collaborate in real-time. Includes a web API (HTTP+WS on port 3101) for browser clients. tmux-backed persistent sessions survive disconnects and proxy restarts.
+**What this is:** SSH multiplexer for shared Claude Code terminal sessions. Multiple users connect via SSH, share live Claude sessions, and collaborate in real-time. Web API on port 3101 serves session data for browser clients (svg-terminal integration). tmux-backed persistent sessions survive disconnects and proxy restarts.
 
 ---
 
 ## Active Direction
 
-Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory feature added (pick dir when creating sessions). Remote session reconnect on restart added. Remote launcher with install/update prompts added.
+**Unified project (2026-04-03):** **Start here:** `docs/integration/UNIFIED-PROJECT.md` — dashboard, doc map, checklist. Workspace: **`unified.code-workspace`** (repo root) opens claude-proxy + svg-terminal. **claude-proxy is the platform** (runs standalone); svg-terminal is a client (depends on CP for `cp-*` integration).
 
-**Next major refactor (APPROVED):** TUI widget system — widgets (state machines) + flow engine (step chaining) + renderers (ANSI/JSON/spans). Widgets produce structured state, renderers convert per transport. Browser JS renders HTML from JSON over WebSocket. SSH gets server-side ANSI rendering. svg-terminal benefits from semantic UI data (knows "list picker with cursor on item 3" not just terminal text). Single spec covering all three layers.
+**Architecture refactor (approved, plans written, ready to execute):**
+1. **Phase A** — Extract operations module from `api-server.ts`, wire dormant auth modules, fix ~40 security findings in-path. Plan: `docs/superpowers/plans/2026-04-03-phase-a-operations-auth.md` (7 tasks)
+2. **Phase C** — Unix socket adapter (JSON-RPC, not HTTP-over-socket), svg-terminal migrates from `fetch()`/`WebSocket()` to socket client. Plan: `docs/superpowers/plans/2026-04-03-phase-c-unix-socket.md` (6 tasks)
+3. **Launch profiles** (independent, parallel) — lobby offers terminal/Claude/Cursor; one internal flow. Plan: `docs/superpowers/plans/2026-04-03-launch-profiles.md` (8 tasks)
 
-**In progress (research → PRD amendment → plan):** Unified **launch profiles** for session creation — one internal terminal/session pipeline; lobby options such as “New Claude session”, “New Cursor session”, “New terminal” (and future tools) layer **profile** (command, args, form gates, backfill, remote strategy) over the same flow. **Baseline (frozen):** `docs/research/add-terminal.md`. **Active stepped copy:** `docs/research/add-terminal.v05.md` — **§3.2** concrete profiles (shell/claude/cursor), Cursor session-ID as sub-project; **§3.4** orchestration; **§8** gap analysis. New discoveries: `cp` → `v06`. Feature work must not multiply parallel `finalize*` / `startNewSession*` code paths; extend a single path via profile registry.
+**Master roadmap (W1–W8):** `/srv/svg-terminal/ui-web/ROADMAP.md` — phases through full web UI, user management, remote profiles, Cursor session-ID, Phase D merge.
 
-**Future:** svg-terminal integration, Docker packaging with Vault, web onboarding, Cloudflare Access auth, user registration/invite system.
-
-**Unified project (2026-04-03):** **Start here:** `docs/integration/UNIFIED-PROJECT.md` — dashboard, doc map, checklist (**claude-proxy is the platform; svg-terminal depends on it for CP integration**). Workspace: **`unified.code-workspace`** (repo root) opens **claude-proxy + svg-terminal**. Client-only stepped notes: `/srv/svg-terminal/docs/integration/`.
+**Research (stepped, approved through v05/v03):**
+- Launch profiles: `docs/research/add-terminal.v05.md`
+- Unix socket + layered OAuth + security: `docs/research/2026-04-03-v0.2-unix-socket-transport-journal.v03.md`
 
 ---
 
@@ -31,96 +34,64 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 [2026-03-29] Always present a plan before writing code. Do not start implementation without approval.
 [2026-03-29] Remote sessions use setup-remote.sh for initial setup. The remote launcher (launch-claude-remote.sh) handles install/update prompts at session creation time.
 [2026-03-29] Use the new self-updating claude installer (curl -sL https://claude.ai/install.sh | bash), not npm install -g.
-
-[2026-04-03] **Stepped research / spec documents (process):** When new discoveries land, **do not edit prior versions in place.** Preserve history and reasoning with `cp`: e.g. `cp add-terminal.md add-terminal.v01.md`, then **only** mutate the new stepped file. Later rounds: `cp add-terminal.v01.md add-terminal.v02.md`, edit v02. Use **`diff`** between steps to show progression. **Greg’s responses:** copy the latest stepped file and append **` -NOTES-01.md`** (e.g. `add-terminal.v01-NOTES-01.md`); the assistant diffs NOTES vs stepped, merges, then produces the **next** stepped version. **Do not advance** to the next planning or implementation phase until the current stepped doc is explicitly **approved**.
+[2026-04-03] **Stepped research / spec documents:** Do not edit prior versions in place. `cp` → new stepped file, edit only the new one. Greg's responses: `vNN-NOTES-01.md`; assistant diffs, merges into `vNN+1`. Do not advance to planning/implementation until approved.
+[2026-04-03] **First principles over shortcuts.** If the design would be different starting from scratch, do it the right way. Don't wrap HTTP semantics over a Unix socket when JSON messages are the natural protocol. Don't optimize for speed at the expense of architecture.
+[2026-04-03] **Security findings in-path:** When modifying a file for a feature, fix security audit findings in that file at the same time. `execSync` → `execFileSync` with array args. Validate all interpolated inputs. See `/root/security-audit-findings.csv` and research v03 §12.
 
 ---
 
 ## Key Technical Decisions
 
-[2026-04-03] Session creation should converge on **one code path** parameterized by **launch profile** (command/args, form visibility, Claude-ID backfill, remote launcher), not separate flows per tool — aligns with “no duplicated patterns” convention
-[2026-04-03] **Orchestration ≠ API contract:** SSH uses stepped in-process flows; web is async. HTTP operations must remain **stateless** (validate body per request; no server wizard session). Shared **DTO + validator + executor** called from flow submit and `api-server.ts` — see `docs/research/add-terminal.v04.md` §3.4, §8
+[2026-04-03] **Operations module:** All API business logic extracted from HTTP route handlers into `src/operations.ts` — typed methods, transport-agnostic. HTTP adapter and Unix socket adapter both call it. This IS the "shared executor" from add-terminal research §3.4.
+[2026-04-03] **Unix socket as primary internal transport:** claude-proxy ↔ svg-terminal communicate via JSON-RPC over `/run/claude-proxy/api.sock` (not HTTP-over-socket). HTTP adapter stays for browsers, OAuth redirects, dev/debug. TCP port is optional.
+[2026-04-03] **Layered OAuth:** claude-proxy owns all auth logic (standalone path). svg-terminal hooks in via internal `authStart`/`authExchange` operations over socket. Zero OAuth deps in svg-terminal.
+[2026-04-03] **Launch profiles:** `shell`/`claude`/`cursor` — each a registry entry with command, capabilities (fork, resume, sessionIdBackfill, dangerMode, remoteSupport), form field gating. Cursor session-ID discovery is a sub-project.
+[2026-04-03] Session creation converges on one code path parameterized by launch profile, not separate flows per tool.
+[2026-04-03] Orchestration ≠ API contract: SSH uses stepped flows; web is async. Server operations are stateless — no wizard sessions.
 [2026-03-28] tmux wraps Claude (not node-pty directly) — sessions survive proxy restarts
 [2026-03-28] ESM modules throughout — all imports use `import`, not `require()`
 [2026-03-28] @xterm/headless for screen buffer — write() is async, flush before reading
 [2026-03-28] Ctrl+B prefix for hotkeys (tmux remapped to Ctrl+Q to avoid conflict)
-[2026-03-28] Title bar via OSC escape for status (not a scroll-region status bar)
-[2026-03-29] Working directory specified at session creation — mkdir -p + cd prefix in tmux launch
-[2026-03-29] Remote sessions persist remoteHost in metadata — enables reconnect on proxy restart
-[2026-03-29] Remote launcher runs as root for interactive prompts, su only at final claude exec
-[2026-03-29] DirScanner scans for git repos + tracks MRU history for workdir picker
 [2026-03-29] Security model: OAuth → Linux user → Unix permissions are the security boundary, not proxy ACLs
 [2026-03-29] tmux sessions use -S custom sockets with UGO permissions for access control
-[2026-03-29] inotify on /etc/group for reactive enforcement when group membership changes externally
-[2026-03-29] Proxy ACLs (hidden, public, allowedUsers) become UI hints that map to Unix groups
-[2026-04-01] Unified session screen: two-mode form interaction — yellow=field navigation (arrows move between fields), white=widget edit (Enter activates, arrows go to widget, Enter/Escape exits). Color shift signals mode.
-[2026-04-01] runas field locked on edit/restart/fork — can't change running process UID. Unlocking requires session export/migration to other user's home dir (future feature).
-[2026-04-01] Session form field config is YAML-driven — locked/visible/prefill per field per mode comes from config, not hardcoded. Widget creation and onResult stay in code.
-[2026-04-01] FlowStep gets displayValue callback (not _display_ keys) — each step defines how to render its completed value.
-[2026-04-01] workdir locked on edit/restart/fork — can't change working directory of existing session.
-[2026-04-01] Claude PID discovery must split cmd on space — `ps` reports `claude --resume` not bare `claude`. Always check `cmd.split(' ')[0]`.
-[2026-04-01] Locked fields in forms must not enter edit mode — Enter is ignored, user arrows past them.
-[2026-04-01] FlowEngine auto-advances cursor to next field after confirming (Enter in edit mode).
-[2026-04-01] Fork/edit always discover Claude session ID live from running process, not from stale metadata cache.
-[2026-04-01] Prefill values must be merged into FlowEngine initialState — otherwise displayValue reads empty accumulated state.
+[2026-04-01] Session form field config is YAML-driven — locked/visible/prefill per field per mode from config, not hardcoded
+[2026-04-01] FlowEngine two-mode navigation (navigate/edit), displayValue callback, auto-advance after confirm
+[2026-04-01] Fork/edit always discover Claude session ID live from running process, not stale metadata
 
 ---
 
 ## Pending Items
 
-[2026-04-03] Add terminal / launch profiles — approve stepped research (`docs/research/add-terminal.v05.md`), amend PRD (**orchestration vs API** + gaps), then implement (shared session-request module + profiles + lobby + API + persistence + remote)
-[2026-04-03] **OAuth + web API wiring** — full spec: `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` (index.ts → startApiServer, ACL parity, WS auth, `api.public_base_url`, feature flag `api.auth.required`)
-[2026-03-29] TUI widget system refactor — extract duplicated picker/input/nav patterns
-[2026-03-30] Configure OAuth providers (Google, Microsoft, GitHub) with real client IDs
-[2026-03-30] Wire OAuth/provisioner into index.ts startApiServer call
-[2026-03-30] Local auth provider (Keycloak or similar) for self-hosted orgs
-[2026-03-28] svg-terminal integration (Phase B/C — client adaptation, merge, QC)
-[2026-03-28] Docker packaging with Vault companion (migrate SQLite → Vault Transit)
-[2026-03-28] Web onboarding wizard
+[2026-04-03] **Execute Phase A** — operations extraction + auth wiring + security hardening (plan written, approved)
+[2026-04-03] **Execute Phase C** — Unix socket adapter + svg-terminal migration (plan written, depends on Phase A)
+[2026-04-03] **Execute launch profiles** — independent, can run parallel with Phase A (plan written)
+[2026-04-03] **Security remediation pass** — ~95 out-of-scope findings (pty-multiplexer, scripts, systemd, svg-terminal) tracked in research v03 §13
+[2026-04-03] Phase D: standalone login HTML, cookie encryption, CSRF, PKCE (plan not yet written)
+[2026-04-03] Phase W2+: live web UI via svg-terminal dashboard (plan not yet written, depends on Phase A+C)
+[2026-03-30] Configure OAuth providers with real client IDs
+[2026-03-28] Docker packaging with Vault companion
 [2026-03-28] User registration + invite system
 
 ---
 
 ## Session History (most recent first)
 
-### 2026-04-03 — Add terminal / launch profiles (research)
-- Goal: menu options for Claude vs Cursor vs plain terminal (and extensibility) without forking creation logic
-- Artifacts: `docs/integration/UNIFIED-PROJECT.md` (platform-first dashboard); `add-terminal.v04.md`; client stepped: svg-terminal `docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md`
-- Next: approve v04 → PRD amend → plan → code
+### 2026-04-03 — Architecture research + implementation planning (full session)
+- **Launch profiles research:** Stepped through v01–v05 with NOTES round-trips. Concrete profiles (shell/claude/cursor), Cursor session-ID as sub-project, form field gating by capability, two-step lobby, orchestration vs stateless API contract, gap analysis
+- **OAuth wiring spec:** Full spec for wiring dormant auth modules into `startApiServer` — ACL parity with SSH, protected routes, WS auth, `api.auth.required` flag
+- **Unix socket research:** Stepped through v01–v03. First-principles design: operations module (not HTTP-over-socket), JSON-RPC protocol, layered OAuth (CP standalone → svg-terminal hooks). Security audit (189 findings) folded: ~55 in-path mapped to refactor tasks, ~95 out-of-scope cataloged
+- **Unified project:** UNIFIED-PROJECT.md dashboard in claude-proxy (platform-first), multi-root workspace file, svg-terminal redirects to it. Web UI master ROADMAP (W1–W8) in svg-terminal `ui-web/`
+- **Plans written:** Phase A (7 tasks), Phase C (6 tasks), Launch profiles (8 tasks)
+- **Process established:** Stepped doc convention, NOTES round-trips, approval gates
+- Artifacts: 5 research docs (stepped), 3 implementation plans, 1 OAuth spec, 1 ROADMAP, UNIFIED-PROJECT dashboard, workspace file
 
 ### 2026-04-01 — Unified Session Screen Implementation (15 tasks, 5 phases)
-- Phase 1: Widget field states (6 states + ANSI colors) + locked option on all widgets
-- Phase 2: FlowEngine two-mode navigation (navigate/edit), displayValue callback, validation + submit gate, full-form renderer
-- Phase 3: YAML-driven session form config (12 fields × 4 modes), predicate registry, widget factory, buildSessionFormSteps
-- Phase 4: Wired into app — creation, edit (Ctrl+B e), fork (Ctrl+B f), restart, fork-from-lobby all use unified SessionForm
-- Phase 5: API endpoints — session CRUD, restart/fork, supporting (remotes, users, groups)
-- Pre-implementation: questions to authoring agent, concerns doc, decision journal, YAML impact report
-- Key decisions: two-mode color signaling (yellow/white), runas/server/workdir locked on edit, YAML config for field metadata
-- 238 tests passing, 31 test files, clean build
-- PR: frodex/claude-proxy#1
-- Artifacts: v2 plan, decision journal, concerns doc, YAML impact report
+- Widget system, FlowEngine, YAML-driven session form, wired into app
+- 238 tests, PR: frodex/claude-proxy#1
 
 ### 2026-03-30 — Auth + UGO Security Implementation (Plans A, B, C)
-- Plan A complete: UserStore (SQLite), LinuxProvisioner, resolveUser — 34 tests
-- Plan B complete: SocketManager (tmux -S sockets), GroupWatcher (inotify), PtyMultiplexer + SessionManager integration — 13 tests
-- Plan C complete: session cookies, auth middleware, OAuthManager (Google/Microsoft OIDC), GitHub adapter, auth routes in API server — 10 tests
-- 124 total tests, 21 test files, clean build
-- OAuth providers not yet configured with real credentials (pending items)
-- Artifacts: 3 implementation plans, security spec, research journal, bibliography updates
+- UserStore, LinuxProvisioner, resolveUser, SocketManager, GroupWatcher, OAuth, session cookies
+- 124 tests — code built but NOT wired into startApiServer (Phase A fixes this)
 
 ### 2026-03-29 — Working directory + remote fixes + widget system design
-- Widget system architecture approved: widgets + flow engine + renderers
-- Key insight: svg-terminal doesn't *need* widgets (ANSI pipeline works), but benefits from semantic UI data for native rendering
-- Journal v0.2 written with direction confirmed
-- Research journal v0.1: 22 UI element inventory, framework survey (Bubbletea, Ink, Textual, Blessed, Ratatui)
-- Bibliography started with framework references
-
-#### Earlier in session
-- Added workdir feature: picker + freehand + tab-completion for session creation
-- Added remote session reconnect on proxy restart (persist remoteHost, scan remotes)
-- Added remote launcher with install/update prompts (launch-claude-remote.sh)
-- Fixed step ordering: workdir after server selection for admins
-- Fixed lobby to show remote host in cyan (@ct100)
-- Discovered 14+ duplicated arrow-key/picker handlers — widget system refactor needed
-- CT-100 claude install was corrupt (failed npm auto-update) — reinstalled via curl
-- Artifacts: design spec, implementation plan, 12+ commits on dev
+- Workdir feature, remote reconnect, remote launcher, widget system spec approved
