@@ -21,7 +21,7 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 
 **Future:** svg-terminal integration, Docker packaging with Vault, web onboarding, Cloudflare Access auth, user registration/invite system.
 
-**Unified project docs (2026-04-03):** Cross-repo specs and stepped integration work with **svg-terminal** live under **`/srv/svg-terminal/docs/integration/`** as the canonical home. Example: `docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` (index + partial-screen narrative). New unified narratives or amendment queues should be authored there first; this repo keeps **claude-proxy–specific** research (`docs/research/`, `docs/superpowers/specs/`) and links outward.
+**Unified project (2026-04-03):** **Start here for both repos:** `/srv/svg-terminal/docs/integration/UNIFIED-PROJECT.md` — single dashboard, doc map, and “what to do today.” Open **`/srv/svg-terminal/unified.code-workspace`** in Cursor to load **svg-terminal + claude-proxy** in one window. Stepped integration files: `/srv/svg-terminal/docs/integration/`. This file remains **claude-proxy operational context**; link UP to UNIFIED-PROJECT for cross-repo work.
 
 ---
 
