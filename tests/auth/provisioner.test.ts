@@ -1,13 +1,13 @@
 // tests/auth/provisioner.test.ts
 import { test, expect, vi, beforeEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { LinuxProvisioner } from '../../src/auth/provisioner.js';
 
 vi.mock('child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
 }));
 
-const mockExec = vi.mocked(execSync);
+const mockExec = vi.mocked(execFileSync);
 
 let provisioner: LinuxProvisioner;
 
@@ -21,61 +21,65 @@ test('createSystemAccount runs useradd with correct args', () => {
   provisioner.createSystemAccount('newuser', 'New User');
 
   expect(mockExec).toHaveBeenCalledWith(
-    expect.stringContaining('useradd'),
+    'useradd',
+    ['-m', '-c', 'New User', '-s', '/bin/bash', 'newuser'],
     expect.any(Object),
   );
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('newuser');
-  expect(cmd).toContain('New User');
 });
 
 test('deleteSystemAccount runs userdel', () => {
   mockExec.mockReturnValue('' as any);
   provisioner.deleteSystemAccount('olduser');
 
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('userdel');
-  expect(cmd).toContain('olduser');
+  expect(mockExec).toHaveBeenCalledWith(
+    'userdel',
+    ['-r', 'olduser'],
+    expect.any(Object),
+  );
 });
 
 test('addToGroup runs usermod -aG with cp- prefix', () => {
   mockExec.mockReturnValue('' as any);
   provisioner.addToGroup('greg', 'devteam');
 
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('usermod');
-  expect(cmd).toContain('-aG');
-  expect(cmd).toContain('cp-devteam');
-  expect(cmd).toContain('greg');
+  expect(mockExec).toHaveBeenCalledWith(
+    'usermod',
+    ['-aG', 'cp-devteam', 'greg'],
+    expect.any(Object),
+  );
 });
 
 test('removeFromGroup runs gpasswd -d with cp- prefix', () => {
   mockExec.mockReturnValue('' as any);
   provisioner.removeFromGroup('greg', 'devteam');
 
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('gpasswd');
-  expect(cmd).toContain('-d');
-  expect(cmd).toContain('greg');
-  expect(cmd).toContain('cp-devteam');
+  expect(mockExec).toHaveBeenCalledWith(
+    'gpasswd',
+    ['-d', 'greg', 'cp-devteam'],
+    expect.any(Object),
+  );
 });
 
 test('createGroup runs groupadd with cp- prefix', () => {
   mockExec.mockReturnValue('' as any);
   provisioner.createGroup('devteam');
 
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('groupadd');
-  expect(cmd).toContain('cp-devteam');
+  expect(mockExec).toHaveBeenCalledWith(
+    'groupadd',
+    ['cp-devteam'],
+    expect.any(Object),
+  );
 });
 
 test('deleteGroup runs groupdel with cp- prefix', () => {
   mockExec.mockReturnValue('' as any);
   provisioner.deleteGroup('devteam');
 
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('groupdel');
-  expect(cmd).toContain('cp-devteam');
+  expect(mockExec).toHaveBeenCalledWith(
+    'groupdel',
+    ['cp-devteam'],
+    expect.any(Object),
+  );
 });
 
 test('getGroups parses id -nG output and strips cp- prefix', () => {
@@ -119,9 +123,9 @@ test('installClaude runs curl installer as the target user', () => {
   mockExec.mockReturnValue('' as any);
   provisioner.installClaude('newuser');
 
-  const cmd = mockExec.mock.calls[0][0] as string;
-  expect(cmd).toContain('su');
-  expect(cmd).toContain('newuser');
-  expect(cmd).toContain('curl');
-  expect(cmd).toContain('claude.ai/install.sh');
+  expect(mockExec).toHaveBeenCalledWith(
+    'su',
+    ['-', 'newuser', '-c', 'curl -sL https://claude.ai/install.sh | bash'],
+    expect.objectContaining({ timeout: 120000 }),
+  );
 });

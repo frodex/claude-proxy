@@ -92,7 +92,7 @@ test('OAuth source resolves user by provider link', () => {
   expect(result.isNew).toBe(false);
 });
 
-test('OAuth source matches by email when no provider link', () => {
+test('OAuth source does NOT auto-link by email when no provider link', () => {
   store.createUser({
     linuxUser: 'greg',
     displayName: 'Greg',
@@ -101,6 +101,8 @@ test('OAuth source matches by email when no provider link', () => {
     createdAt: new Date(),
     lastLogin: new Date(),
   });
+  (mockProvisioner.userExists as any).mockReturnValue(false);
+  (mockProvisioner.getGroups as any).mockReturnValue(['users']);
 
   const source: OAuthSource = {
     type: 'oauth',
@@ -111,10 +113,11 @@ test('OAuth source matches by email when no provider link', () => {
   };
   const result = resolveUser(source, store, mockProvisioner);
 
-  expect(result.identity.linuxUser).toBe('greg');
-  expect(result.isNew).toBe(false);
+  // Should provision a new account, NOT link to existing greg
+  expect(result.isNew).toBe(true);
+  expect(result.identity.linuxUser).not.toBe('greg');
   const links = store.getProviderLinks('greg');
-  expect(links.find(l => l.provider === 'github')).toBeTruthy();
+  expect(links.find(l => l.provider === 'github')).toBeFalsy();
 });
 
 test('OAuth source provisions new account when no match', () => {

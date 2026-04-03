@@ -47,7 +47,8 @@ export class GitHubAdapter {
     });
     const emails = await emailRes.json() as Array<{ email: string; primary: boolean; verified: boolean }>;
     const primary = emails.find((e) => e.primary && e.verified);
-    const email = primary?.email || (user.email as string | undefined);
+    if (!primary) throw new Error('No verified primary email found on GitHub account');
+    const email = primary.email;
 
     if (!email) throw new Error('No verified email found on GitHub account');
 

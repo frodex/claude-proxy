@@ -42,7 +42,7 @@ function resolveSsh(source: SshSource, store: UserStore, provisioner: Provisione
   return { identity, isNew: true };
 }
 
-function resolveOAuth(source: OAuthSource, store: UserStore, provisioner: Provisioner): ResolveResult {
+function resolveOAuth(source: OAuthSource, store: UserStore, provisioner: Provisioner, options?: { provision?: boolean }): ResolveResult {
   // 1. Check by provider link
   const byProvider = store.findByProvider(source.provider, source.providerId);
   if (byProvider) {
@@ -50,15 +50,14 @@ function resolveOAuth(source: OAuthSource, store: UserStore, provisioner: Provis
     return { identity: { ...byProvider, lastLogin: new Date() }, isNew: false };
   }
 
-  // 2. Check by email match
-  const byEmail = store.findByEmail(source.email);
-  if (byEmail) {
-    store.linkProvider(byEmail.linuxUser, source.provider, source.providerId, source.email);
-    store.updateLastLogin(byEmail.linuxUser);
-    return { identity: { ...byEmail, lastLogin: new Date() }, isNew: false };
-  }
+  // 2. Check by email match — require explicit linking, not automatic
+  // Email matching alone is insufficient for account binding;
+  // the provider link must already exist or be created via admin action
 
-  // 3. Provision new account
+  // 3. Provision new account (only if allowed)
+  if (options?.provision === false) {
+    throw new Error('Account provisioning is disabled — contact an administrator');
+  }
   const baseUsername = emailToUsername(source.email);
   const username = findAvailableUsername(baseUsername, store, provisioner);
 
@@ -85,9 +84,10 @@ export function resolveUser(
   source: AuthSource,
   store: UserStore,
   provisioner: Provisioner,
+  options?: { provision?: boolean },
 ): ResolveResult {
   if (source.type === 'ssh') {
     return resolveSsh(source, store, provisioner);
   }
-  return resolveOAuth(source, store, provisioner);
+  return resolveOAuth(source, store, provisioner, options);
 }

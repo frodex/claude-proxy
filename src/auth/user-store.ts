@@ -1,5 +1,6 @@
 // src/auth/user-store.ts
 import Database from 'better-sqlite3-multiple-ciphers';
+import { chmodSync } from 'fs';
 import type { UserIdentity, ProviderLink, UserStore } from './types.js';
 
 const SCHEMA = `
@@ -30,6 +31,7 @@ export class SQLiteUserStore implements UserStore {
 
   constructor(dbPath: string, encryptionKey?: string) {
     this.db = new Database(dbPath);
+    try { chmodSync(dbPath, 0o600); } catch {}
     if (encryptionKey) {
       this.db.pragma(`key='${encryptionKey}'`);
     }
