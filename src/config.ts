@@ -52,9 +52,12 @@ export function loadConfig(options: LoadOptions = {}): Config {
   return config;
 }
 
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function deepMerge(target: Record<string, any>, source: Record<string, any>): Record<string, any> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
+    if (UNSAFE_KEYS.has(key)) continue;
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
       result[key] = deepMerge(result[key] ?? {}, source[key]);
     } else {
