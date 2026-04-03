@@ -16,13 +16,16 @@ import { buildSessionFormSteps } from './session-form.js';
 import { getClaudeUsers, getClaudeGroups, isUserInGroup } from './user-utils.js';
 import { listDeadSessions, saveSessionMeta, loadSessionMeta, type StoredSession } from './session-store.js';
 import { findUserSessions, createExportZip, type ExportableSession } from './export.js';
-import { createHash } from 'crypto';
-import { existsSync, readdirSync, statSync } from 'fs';
+import { scryptSync, randomBytes, createHash } from 'crypto';
+import { existsSync, readdirSync, statSync, mkdirSync } from 'fs';
 import type { Client, Session, SessionAccess } from './types.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { hostname } from 'os';
 import { LinuxProvisioner } from './auth/provisioner.js';
+import { OAuthManager } from './auth/oauth.js';
+import { GitHubAdapter } from './auth/github-adapter.js';
+import { SQLiteUserStore } from './auth/user-store.js';
 import { SocketManager } from './ugo/socket-manager.js';
 import { GroupWatcher } from './ugo/group-watcher.js';
 import { executeCrossFork as runCrossFork, isToolAvailable as isClaudeForkAvailable } from './claude-fork-client.js';
@@ -73,9 +76,17 @@ const clientState: Map<string, {
 
 const creationFlows: Map<string, { flow: FlowEngine; isResume?: boolean; isFork?: boolean; sourceSessionId?: string; claudeId?: string }> = new Map();
 
-// Password hashing (simple SHA-256 — not bcrypt to avoid dependency)
 function hashPassword(pw: string): string {
-  return createHash('sha256').update(pw).digest('hex');
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(pw, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(pw: string, stored: string): boolean {
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  const derived = scryptSync(pw, salt, 64).toString('hex');
+  return derived === hash;
 }
 
 const passwordFlow: Map<string, { sessionId: string; buffer: string }> = new Map();
@@ -880,7 +891,7 @@ transport.onConnect((client) => {
       if (str === '\x7f' || str === '\b') { if (pf.buffer.length > 0) { pf.buffer = pf.buffer.slice(0, -1); client.write('\b \b'); } return; }
       if (str === '\r' || str === '\n') {
         const session = sessionManager.getSession(pf.sessionId);
-        if (session && session.access.passwordHash === hashPassword(pf.buffer)) {
+        if (session && session.access.passwordHash && verifyPassword(pf.buffer, session.access.passwordHash)) {
           passwordFlow.delete(client.id);
           joinSession(client, pf.sessionId);
         } else {
@@ -1008,9 +1019,43 @@ process.on('SIGTERM', async () => {
 transport.start();
 
 // Start API server for browser clients
-const apiPort = (config as any).api?.port ?? 3101;
-const apiHost = (config as any).api?.host ?? '127.0.0.1';
+const apiPort = config.api?.port ?? 3101;
+const apiHost = config.api?.host ?? '127.0.0.1';
 const webDir = resolve(__dirname, '..', 'web');
+
+mkdirSync(resolve(__dirname, '..', 'data'), { recursive: true });
+
+const userStore = new SQLiteUserStore(resolve(__dirname, '..', 'data', 'users.db'));
+
+const providers = config.auth?.providers;
+const callbackBase = config.api?.public_base_url || `http://127.0.0.1:${apiPort}`;
+
+let oauthManager: OAuthManager | undefined;
+if (providers?.google || providers?.microsoft) {
+  oauthManager = new OAuthManager({
+    google: providers.google ? { clientId: providers.google.client_id, clientSecret: providers.google.client_secret } : undefined,
+    microsoft: providers.microsoft ? { clientId: providers.microsoft.client_id, clientSecret: providers.microsoft.client_secret, tenant: providers.microsoft.tenant } : undefined,
+  }, callbackBase);
+}
+
+let githubAdapter: GitHubAdapter | undefined;
+if (providers?.github) {
+  githubAdapter = new GitHubAdapter(providers.github.client_id, providers.github.client_secret, callbackBase);
+}
+
+const cookieSecret = config.auth?.session?.secret;
+const cookieMaxAge = config.auth?.session?.max_age ?? 86400;
+
+if (!cookieSecret && (oauthManager || githubAdapter)) {
+  console.error('FATAL: auth.session.secret is required when OAuth providers are configured');
+  process.exit(1);
+}
+
+if (!cookieSecret && config.api?.auth?.required) {
+  console.error('FATAL: auth.session.secret is required when api.auth.required is true');
+  process.exit(1);
+}
+
 startApiServer({
   port: apiPort,
   host: apiHost,
@@ -1018,4 +1063,10 @@ startApiServer({
   config,
   staticDir: webDir,
   dirScanner,
+  oauthManager,
+  githubAdapter,
+  userStore,
+  provisioner,
+  cookieSecret,
+  cookieMaxAge,
 });

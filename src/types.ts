@@ -29,6 +29,16 @@ export interface Config {
     name: string;
     host: string;
   }>;
+  api?: {
+    port?: number;
+    host?: string;
+    socket?: string;
+    public_base_url?: string;
+    cors_origin?: string;
+    auth?: {
+      required?: boolean;
+    };
+  };
 }
 
 export interface Client {
