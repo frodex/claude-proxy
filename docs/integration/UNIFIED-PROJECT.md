@@ -58,6 +58,7 @@ Edit this section as you finish items.
 | WS bridge (client behaviour) | `/srv/svg-terminal/docs/superpowers/specs/2026-03-30-claude-proxy-websocket-integration-design.md` |
 | Typing / user id browser → CP | `/srv/svg-terminal/docs/PRD-amendment-005.md` |
 | Partial screen + client index | `/srv/svg-terminal/docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` |
+| Unix socket API + svg-terminal systemd (Phase C) | `/srv/svg-terminal/docs/PRD-amendment-006.md` — journal: `docs/research/2026-04-03-v0.1-phase-c-socket-systemd-journal.md` (this repo) |
 
 ---
 
