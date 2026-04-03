@@ -1,39 +1,21 @@
 // src/api-server.ts
 // HTTP + WebSocket API server for browser clients (port 3101)
-// Serves: session list, bidirectional terminal stream, static files
+// Thin HTTP adapter — business logic lives in operations.ts
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { readFileSync, existsSync, statSync } from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join, extname, resolve } from 'path';
-import { randomBytes } from 'crypto';
 import { SessionManager } from './session-manager.js';
-import { lineToSpans, bufferToScreenState, PALETTE_256, type ScreenLine } from './screen-renderer.js';
-import type { Config, Session, SessionAccess } from './types.js';
+import { lineToSpans, bufferToScreenState } from './screen-renderer.js';
+import type { Config } from './types.js';
 import { DirScanner } from './dir-scanner.js';
-import { listDeadSessions } from './session-store.js';
-import { getClaudeUsers, getClaudeGroups } from './user-utils.js';
 import type { OAuthManager } from './auth/oauth.js';
 import type { GitHubAdapter } from './auth/github-adapter.js';
 import type { UserStore, Provisioner } from './auth/types.js';
-
-function composeTitle(session: any): string {
-  const users = Array.from(session.clients.values()).map((c: any) => {
-    const prefix = c.id === session.sizeOwner ? '*' : '';
-    return `${prefix}${c.username}`;
-  });
-
-  const ms = Date.now() - new Date(session.createdAt).getTime();
-  const seconds = Math.floor(ms / 1000);
-  let uptime: string;
-  if (seconds < 60) uptime = `${seconds}s`;
-  else if (seconds < 3600) uptime = `${Math.floor(seconds / 60)}m`;
-  else { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); uptime = `${h}h${m > 0 ? m + 'm' : ''}`; }
-
-  const userStr = users.length > 0 ? users.join(', ') : 'no users';
-  return `${session.name} | ${userStr} | ${uptime}`;
-}
+import { ProxyOperations, composeTitle, parseAnsiLine } from './operations.js';
+import { validateSessionCookie } from './auth/session-cookie.js';
 
 // Key translation: structured browser input → PTY escape sequences
 const SPECIAL_KEYS: Record<string, string> = {
@@ -85,7 +67,6 @@ interface ApiServerOptions {
   config: Config;
   staticDir: string;
   dirScanner: DirScanner;
-  // Auth fields (all optional for backward compatibility)
   oauthManager?: OAuthManager;
   githubAdapter?: GitHubAdapter;
   userStore?: UserStore;
@@ -104,62 +85,25 @@ interface StreamClient {
   pollTimer?: ReturnType<typeof setInterval>;
 }
 
-/**
- * Parse a line of tmux capture-pane -e output (ANSI escape codes) into spans.
- */
-function parseAnsiLine(raw: string): Array<{ text: string; fg?: string; bg?: string; bold?: boolean; italic?: boolean; underline?: boolean; dim?: boolean; strikethrough?: boolean }> {
-  const spans: Array<any> = [];
-  let current: any = { text: '' };
-  let i = 0;
+interface CookiePayload {
+  linuxUser: string;
+  displayName: string;
+}
 
-  while (i < raw.length) {
-    if (raw[i] === '\x1b' && raw[i + 1] === '[') {
-      if (current.text) {
-        spans.push(current);
-        current = { ...current, text: '' };
-      }
-      const end = raw.indexOf('m', i + 2);
-      if (end === -1) { i++; continue; }
-      const codes = raw.slice(i + 2, end).split(';').map(Number);
-      i = end + 1;
+function json(res: ServerResponse, status: number, body: any): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
 
-      for (let c = 0; c < codes.length; c++) {
-        const code = codes[c];
-        if (code === 0) { current = { text: '' }; }
-        else if (code === 1) { current.bold = true; }
-        else if (code === 2) { current.dim = true; }
-        else if (code === 3) { current.italic = true; }
-        else if (code === 4) { current.underline = true; }
-        else if (code === 9) { current.strikethrough = true; }
-        else if (code === 22) { delete current.bold; delete current.dim; }
-        else if (code === 23) { delete current.italic; }
-        else if (code === 24) { delete current.underline; }
-        else if (code === 29) { delete current.strikethrough; }
-        else if (code >= 30 && code <= 37) { current.fg = PALETTE_256[code - 30]; }
-        else if (code === 38 && codes[c + 1] === 5) { current.fg = PALETTE_256[codes[c + 2]] ?? undefined; c += 2; }
-        else if (code === 38 && codes[c + 1] === 2) {
-          current.fg = `#${codes[c+2].toString(16).padStart(2,'0')}${codes[c+3].toString(16).padStart(2,'0')}${codes[c+4].toString(16).padStart(2,'0')}`;
-          c += 4;
-        }
-        else if (code >= 40 && code <= 47) { current.bg = PALETTE_256[code - 40]; }
-        else if (code === 48 && codes[c + 1] === 5) { current.bg = PALETTE_256[codes[c + 2]] ?? undefined; c += 2; }
-        else if (code === 48 && codes[c + 1] === 2) {
-          current.bg = `#${codes[c+2].toString(16).padStart(2,'0')}${codes[c+3].toString(16).padStart(2,'0')}${codes[c+4].toString(16).padStart(2,'0')}`;
-          c += 4;
-        }
-        else if (code >= 90 && code <= 97) { current.fg = PALETTE_256[code - 90 + 8]; }
-        else if (code >= 100 && code <= 107) { current.bg = PALETTE_256[code - 100 + 8]; }
-        else if (code === 39) { delete current.fg; }
-        else if (code === 49) { delete current.bg; }
-      }
-    } else {
-      current.text += raw[i];
-      i++;
-    }
-  }
-
-  if (current.text) spans.push(current);
-  return spans;
+function errorResponse(res: ServerResponse, err: any): void {
+  const code = err.code;
+  const status = code === 'NOT_FOUND' ? 404
+    : code === 'FORBIDDEN' ? 403
+    : code === 'BAD_REQUEST' ? 400
+    : code === 'UNAUTHORIZED' ? 401
+    : code === 'CONFLICT' ? 409
+    : 500;
+  json(res, status, { error: err.message || 'Internal error' });
 }
 
 export function startApiServer(options: ApiServerOptions): void {
@@ -168,11 +112,39 @@ export function startApiServer(options: ApiServerOptions): void {
     cookieSecret, cookieMaxAge } = options;
   const streamClients: Map<WebSocket, StreamClient> = new Map();
   const pendingOAuthStates: Map<string, { provider: string; createdAt: number }> = new Map();
+  const apiAuthRequired = !!cookieSecret;
 
+  const ops = new ProxyOperations(
+    sessionManager, config, dirScanner,
+    oauthManager, githubAdapter, userStore, provisioner,
+  );
+
+  function requireAuth(req: IncomingMessage, res: ServerResponse): CookiePayload | null {
+    if (!apiAuthRequired) return { linuxUser: 'root', displayName: 'root' };
+    const cookies = parseCookies(req.headers.cookie || '');
+    const session = cookies['session'];
+    if (!session || !cookieSecret) {
+      json(res, 401, { error: 'Authentication required' });
+      return null;
+    }
+    const payload = validateSessionCookie(session, cookieSecret);
+    if (!payload) {
+      json(res, 401, { error: 'Invalid or expired session' });
+      return null;
+    }
+    return payload;
+  }
+
+  const MAX_BODY = 1_048_576;
   const readBody = (req: IncomingMessage): Promise<string> =>
     new Promise((resolve, reject) => {
       let body = '';
-      req.on('data', (chunk: any) => body += chunk);
+      let size = 0;
+      req.on('data', (chunk: any) => {
+        size += chunk.length;
+        if (size > MAX_BODY) { req.destroy(); reject(new Error('Body too large')); return; }
+        body += chunk;
+      });
       req.on('end', () => resolve(body));
       req.on('error', reject);
     });
@@ -180,8 +152,9 @@ export function startApiServer(options: ApiServerOptions): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
-    // CORS for local development
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS — use configured origin or fall back to wildcard for dev
+    const allowedOrigin = (config as any).api?.cors_origin || (config as any).api?.public_base_url || '';
+    if (allowedOrigin) res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -191,103 +164,59 @@ export function startApiServer(options: ApiServerOptions): void {
       return;
     }
 
-    // --- Auth routes ---
+    // --- Auth routes (stay in api-server — cookie/redirect concerns) ---
 
-    // GET /api/auth/providers
     if (url.pathname === '/api/auth/providers' && req.method === 'GET') {
-      const providers: string[] = [];
-      if (oauthManager) providers.push(...oauthManager.getSupportedProviders());
-      if (githubAdapter) providers.push('github');
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ providers }));
+      json(res, 200, { providers: ops.getAuthProviders() });
       return;
     }
 
-    // GET /api/auth/login
     if (url.pathname === '/api/auth/login' && req.method === 'GET') {
       const provider = url.searchParams.get('provider');
       if (!provider) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'provider parameter required' }));
+        json(res, 400, { error: 'provider parameter required' });
         return;
       }
 
-      // Generate random state
-      const state = randomBytes(16).toString('hex');
-      pendingOAuthStates.set(state, { provider, createdAt: Date.now() });
-
-      // Clean up old states (> 10 min)
-      const cutoff = Date.now() - 600000;
-      for (const [s, v] of pendingOAuthStates) {
-        if (v.createdAt < cutoff) pendingOAuthStates.delete(s);
-      }
-
       try {
-        let authUrl: string;
-        if (provider === 'github' && githubAdapter) {
-          authUrl = githubAdapter.getAuthUrl(state);
-        } else if (oauthManager) {
-          authUrl = await oauthManager.getAuthUrl(provider, state);
-        } else {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `Provider "${provider}" not configured` }));
-          return;
+        const result = await ops.startAuth(provider);
+        pendingOAuthStates.set(result.state, { provider, createdAt: Date.now() });
+
+        // Clean up old states (> 10 min)
+        const cutoff = Date.now() - 600000;
+        for (const [s, v] of pendingOAuthStates) {
+          if (v.createdAt < cutoff) pendingOAuthStates.delete(s);
         }
-        res.writeHead(302, { Location: authUrl });
+
+        res.writeHead(302, { Location: result.authUrl });
         res.end();
       } catch (err: any) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // GET /api/auth/callback
     if (url.pathname === '/api/auth/callback' && req.method === 'GET') {
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
 
       if (!code || !state) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing code or state' }));
+        json(res, 400, { error: 'Missing code or state' });
         return;
       }
 
       const pending = pendingOAuthStates.get(state);
       if (!pending) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid or expired state' }));
+        json(res, 400, { error: 'Invalid or expired state' });
         return;
       }
       pendingOAuthStates.delete(state);
 
       try {
-        let profile: { email: string; displayName: string; providerId: string };
-        if (pending.provider === 'github' && githubAdapter) {
-          profile = await githubAdapter.handleCallback(code);
-        } else if (oauthManager) {
-          profile = await oauthManager.handleCallback(pending.provider, url, state);
-        } else {
-          throw new Error('Provider not configured');
-        }
+        const result = await ops.handleAuthCallback(pending.provider, code, url, state);
 
-        // Resolve user identity
-        const { resolveUser } = await import('./auth/resolve-user.js');
-        const result = resolveUser(
-          {
-            type: 'oauth',
-            provider: pending.provider,
-            providerId: profile.providerId,
-            email: profile.email,
-            displayName: profile.displayName,
-          },
-          userStore!,
-          provisioner!,
-        );
-
-        // Create session cookie
         const { createSessionCookie } = await import('./auth/session-cookie.js');
-        const secret = cookieSecret || 'default-insecure-secret';
+        const secret = cookieSecret!;
         const maxAge = cookieMaxAge || 86400;
         const cookie = createSessionCookie(
           { linuxUser: result.identity.linuxUser, displayName: result.identity.displayName },
@@ -302,13 +231,11 @@ export function startApiServer(options: ApiServerOptions): void {
         res.end();
       } catch (err: any) {
         console.error('[auth] callback error:', err.message);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Authentication failed' }));
+        json(res, 500, { error: 'Authentication failed' });
       }
       return;
     }
 
-    // GET /api/auth/me
     if (url.pathname === '/api/auth/me' && req.method === 'GET') {
       const { validateSessionCookie } = await import('./auth/session-cookie.js');
       const cookieHeader = req.headers.cookie || '';
@@ -316,24 +243,20 @@ export function startApiServer(options: ApiServerOptions): void {
       const sessionCookie = cookies['session'];
 
       if (!sessionCookie || !cookieSecret) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Not authenticated' }));
+        json(res, 401, { error: 'Not authenticated' });
         return;
       }
 
       const payload = validateSessionCookie(sessionCookie, cookieSecret);
       if (!payload) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid or expired session' }));
+        json(res, 401, { error: 'Invalid or expired session' });
         return;
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ user: payload }));
+      json(res, 200, { user: payload });
       return;
     }
 
-    // POST /api/auth/logout
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -343,363 +266,145 @@ export function startApiServer(options: ApiServerOptions): void {
       return;
     }
 
-    // --- Session CRUD routes ---
+    // --- Session CRUD routes — thin delegation to operations ---
 
-    // POST /api/sessions — create session
     if (url.pathname === '/api/sessions' && req.method === 'POST') {
+      const user = requireAuth(req, res); if (!user) return;
       try {
         const body = JSON.parse(await readBody(req));
-        if (!body.name) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'name is required' }));
-          return;
-        }
-
-        const access: Partial<SessionAccess> = {
-          hidden: body.hidden ?? false,
-          viewOnly: body.viewOnly ?? false,
-          public: body.public ?? true,
-          allowedUsers: body.allowedUsers ?? [],
-          allowedGroups: body.allowedGroups ?? [],
-          passwordHash: body.password ?? null,
-        };
-
-        const fakeClient = {
-          id: 'api-' + Date.now(),
-          username: 'root',
-          transport: 'websocket' as const,
-          termSize: { cols: 80, rows: 24 },
-          write: () => {},
-          lastKeystroke: Date.now(),
-        };
-
-        const args: string[] = [];
-        if (body.dangerousSkipPermissions) args.push('--dangerously-skip-permissions');
-
-        const session = sessionManager.createSession(
-          body.name, fakeClient, body.runAsUser, 'claude', access, args, undefined, body.workingDir,
-        );
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: session.id, name: session.name }));
+        const result = ops.createSession(body, user.linuxUser);
+        json(res, 201, result);
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // GET /api/sessions/dead — list dead sessions
     if (url.pathname === '/api/sessions/dead' && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       try {
-        const dead = listDeadSessions();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(dead.map(d => ({
-          id: d.tmuxId,
-          name: d.name,
-          claudeSessionId: d.claudeSessionId ?? null,
-          workingDir: d.workingDir ?? null,
-          remoteHost: d.remoteHost ?? null,
-        }))));
+        json(res, 200, ops.listDeadSessions());
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // DELETE /api/sessions/:id — destroy session
     if (url.pathname.match(/^\/api\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+      const user = requireAuth(req, res); if (!user) return;
       const id = url.pathname.split('/')[3];
-      const session = sessionManager.getSession(id);
-      if (!session) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Session not found' }));
-        return;
+      try {
+        ops.destroySession(id, user.linuxUser);
+        json(res, 200, { ok: true });
+      } catch (err: any) {
+        errorResponse(res, err);
       }
-      sessionManager.destroySession(id);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
-    // GET /api/sessions/:id/settings — get session settings
     if (url.pathname.match(/^\/api\/sessions\/[^/]+\/settings$/) && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       const id = url.pathname.split('/')[3];
-      const session = sessionManager.getSession(id);
-      if (!session) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Session not found' }));
-        return;
+      try {
+        json(res, 200, ops.getSessionSettings(id, user.linuxUser));
+      } catch (err: any) {
+        errorResponse(res, err);
       }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        name: session.name,
-        runAsUser: session.runAsUser,
-        workingDir: (session as any).workingDir || null,
-        access: session.access,
-      }));
       return;
     }
 
-    // PATCH /api/sessions/:id/settings — update session settings
     if (url.pathname.match(/^\/api\/sessions\/[^/]+\/settings$/) && req.method === 'PATCH') {
+      const user = requireAuth(req, res); if (!user) return;
       const id = url.pathname.split('/')[3];
-      const session = sessionManager.getSession(id);
-      if (!session) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Session not found' }));
-        return;
-      }
       try {
         const body = JSON.parse(await readBody(req));
-        // Only allow safe fields to be updated (not runAsUser, workingDir, remoteHost)
-        if (body.name !== undefined) (session as any).name = body.name;
-        if (body.hidden !== undefined) session.access.hidden = body.hidden;
-        if (body.viewOnly !== undefined) session.access.viewOnly = body.viewOnly;
-        if (body.public !== undefined) session.access.public = body.public;
-        if (body.allowedUsers !== undefined) session.access.allowedUsers = body.allowedUsers;
-        if (body.allowedGroups !== undefined) session.access.allowedGroups = body.allowedGroups;
-        if (body.password !== undefined) session.access.passwordHash = body.password;
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        ops.updateSessionSettings(id, user.linuxUser, body);
+        json(res, 200, { ok: true });
       } catch (err: any) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // POST /api/sessions/:id/restart — restart dead session
     if (url.pathname.match(/^\/api\/sessions\/[^/]+\/restart$/) && req.method === 'POST') {
+      const user = requireAuth(req, res); if (!user) return;
       const id = url.pathname.split('/')[3];
       try {
         const body = JSON.parse(await readBody(req));
-        const settings = body.settings || {};
-
-        // Find dead session with this ID
-        const dead = listDeadSessions();
-        const deadSession = dead.find(d => d.tmuxId === id);
-        if (!deadSession) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Dead session not found' }));
-          return;
-        }
-
-        const access: Partial<SessionAccess> = {
-          hidden: settings.hidden ?? deadSession.access.hidden,
-          viewOnly: settings.viewOnly ?? deadSession.access.viewOnly,
-          public: settings.public ?? deadSession.access.public,
-          allowedUsers: settings.allowedUsers ?? deadSession.access.allowedUsers,
-          allowedGroups: settings.allowedGroups ?? deadSession.access.allowedGroups,
-          passwordHash: settings.password ?? deadSession.access.passwordHash,
-        };
-
-        const fakeClient = {
-          id: 'api-' + Date.now(),
-          username: deadSession.access.owner,
-          transport: 'websocket' as const,
-          termSize: { cols: 80, rows: 24 },
-          write: () => {},
-          lastKeystroke: Date.now(),
-        };
-
-        const args: string[] = [];
-        // If there's a Claude session ID, resume it
-        if (deadSession.claudeSessionId) {
-          args.push('--resume', deadSession.claudeSessionId);
-        }
-
-        const session = sessionManager.createSession(
-          settings.name ?? deadSession.name,
-          fakeClient,
-          deadSession.runAsUser,
-          'claude',
-          access,
-          args,
-          deadSession.remoteHost,
-          deadSession.workingDir,
-        );
-
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: session.id, name: session.name }));
+        const result = ops.restartSession(id, user.linuxUser, body.settings);
+        json(res, 201, result);
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // POST /api/sessions/:id/fork — fork a session
     if (url.pathname.match(/^\/api\/sessions\/[^/]+\/fork$/) && req.method === 'POST') {
+      const user = requireAuth(req, res); if (!user) return;
       const id = url.pathname.split('/')[3];
       try {
         const body = JSON.parse(await readBody(req));
-        const settings = body.settings || {};
-
-        // Get source session to find Claude session ID
-        const sourceSession = sessionManager.getSession(id) as any;
-        if (!sourceSession) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Source session not found' }));
-          return;
-        }
-
-        // Get Claude session ID from session store metadata
-        const { loadSessionMeta } = await import('./session-store.js');
-        const meta = loadSessionMeta(id);
-        const claudeId = meta?.claudeSessionId;
-        if (!claudeId) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Source session has no Claude session ID to fork from' }));
-          return;
-        }
-
-        const access: Partial<SessionAccess> = {
-          hidden: settings.hidden ?? sourceSession.access.hidden,
-          viewOnly: settings.viewOnly ?? sourceSession.access.viewOnly,
-          public: settings.public ?? sourceSession.access.public,
-          allowedUsers: settings.allowedUsers ?? sourceSession.access.allowedUsers,
-          allowedGroups: settings.allowedGroups ?? sourceSession.access.allowedGroups,
-          passwordHash: settings.password ?? sourceSession.access.passwordHash,
-        };
-
-        const fakeClient = {
-          id: 'api-' + Date.now(),
-          username: sourceSession.access.owner,
-          transport: 'websocket' as const,
-          termSize: { cols: 80, rows: 24 },
-          write: () => {},
-          lastKeystroke: Date.now(),
-        };
-
-        const args = ['--resume', claudeId, '--fork-session'];
-
-        const forkedSession = sessionManager.createSession(
-          settings.name ?? `${sourceSession.name}-fork`,
-          fakeClient,
-          sourceSession.runAsUser,
-          'claude',
-          access,
-          args,
-          sourceSession.remoteHost,
-          sourceSession.workingDir,
-        );
-
-        res.writeHead(201, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: forkedSession.id, name: forkedSession.name }));
+        const result = ops.forkSession(id, user.linuxUser, body.settings);
+        json(res, 201, result);
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
     // --- Supporting endpoints ---
 
-    // GET /api/remotes — list configured remote hosts
     if (url.pathname === '/api/remotes' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(config.remotes || []));
+      json(res, 200, ops.listRemotes());
       return;
     }
 
-    // GET /api/users — list available users
     if (url.pathname === '/api/users' && req.method === 'GET') {
       try {
-        const users = getClaudeUsers();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(users));
+        json(res, 200, ops.listUsers());
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // GET /api/groups — list available groups
     if (url.pathname === '/api/groups' && req.method === 'GET') {
       try {
-        const groups = getClaudeGroups();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(groups));
+        json(res, 200, ops.listGroups());
       } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+        errorResponse(res, err);
       }
       return;
     }
 
-    // API: session list
     if (url.pathname === '/api/sessions' && req.method === 'GET') {
-      const sessions = sessionManager.listSessions().map(s => {
-        const pty = (s as any).pty;
-        const dims = pty?.getScreenDimensions?.() ?? { cols: 80, rows: 24 };
-        return {
-          id: s.id,
-          name: s.name,
-          title: composeTitle(s),
-          cols: dims.cols,
-          rows: dims.rows,
-          clients: s.clients.size,
-          owner: s.access?.owner,
-          createdAt: s.createdAt.toISOString(),
-          workingDir: (s as any).workingDir || null,
-        };
-      });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(sessions));
+      const user = requireAuth(req, res); if (!user) return;
+      try {
+        json(res, 200, ops.listSessions(user.linuxUser));
+      } catch (err: any) {
+        errorResponse(res, err);
+      }
       return;
     }
 
-    // API: directory history for browser picker
     if (url.pathname === '/api/directories' && req.method === 'GET') {
-      const history = dirScanner.getHistory();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ history }));
+      json(res, 200, { history: ops.getDirectoryHistory() });
       return;
     }
 
     // API: screen state (HTTP)
     const screenMatch = url.pathname.match(/^\/api\/session\/([^/]+)\/screen$/);
     if (screenMatch && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       const sessionId = screenMatch[1];
-      const session = sessionManager.getSession(sessionId) as any;
-      if (!session || !session.pty) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Session not found' }));
-        return;
+      try {
+        const start = url.searchParams.has('start') ? parseInt(url.searchParams.get('start')!) : undefined;
+        const end = url.searchParams.has('end') ? parseInt(url.searchParams.get('end')!) : undefined;
+        const state = ops.getSessionScreen(sessionId, user.linuxUser, { start, end });
+        json(res, 200, state);
+      } catch (err: any) {
+        errorResponse(res, err);
       }
-
-      const dims = session.pty.getScreenDimensions();
-      const title = composeTitle(session);
-      const initial = session.pty.getInitialScreen();
-
-      let state: any;
-      if (initial.source === 'cache' && initial.text) {
-        // Cache path — ANSI-escaped text from tmux capture-pane -e.
-        const textLines = initial.text.split('\n');
-        const lines: Array<{ spans: any[] }> = [];
-        for (let i = 0; i < dims.rows; i++) {
-          const raw = textLines[i] || '';
-          lines.push({ spans: raw ? parseAnsiLine(raw) : [] });
-        }
-        state = {
-          width: dims.cols,
-          height: dims.rows,
-          cursor: { x: 0, y: 0 },
-          title,
-          lines,
-        };
-      } else {
-        // vterm path — respect line range query params
-        const buffer = initial.buffer ?? session.pty.getBuffer();
-        const start = parseInt(url.searchParams.get('start') || String(dims.baseY));
-        const end = parseInt(url.searchParams.get('end') || String(dims.baseY + dims.rows));
-        state = bufferToScreenState(buffer, dims.cols, end - start, title);
-      }
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(state));
       return;
     }
 
@@ -707,7 +412,6 @@ export function startApiServer(options: ApiServerOptions): void {
     let filePath = url.pathname === '/' ? '/index.html' : url.pathname;
     const fullPath = resolve(staticDir, '.' + filePath);
 
-    // Security: prevent directory traversal
     if (!fullPath.startsWith(resolve(staticDir))) {
       res.writeHead(403);
       res.end('Forbidden');
@@ -765,7 +469,6 @@ export function startApiServer(options: ApiServerOptions): void {
 
     let fullState: any;
     if (initial.source === 'cache' && initial.text) {
-      // Cache path — ANSI-escaped text from tmux capture-pane -e.
       const textLines = initial.text.split('\n');
       const lines: Array<{ spans: any[] }> = [];
       for (let i = 0; i < dims.rows; i++) {
@@ -780,7 +483,6 @@ export function startApiServer(options: ApiServerOptions): void {
         lines,
       };
     } else {
-      // vterm path — full styled buffer (settled or partial best-effort)
       const buffer = initial.buffer ?? session.pty.getBuffer();
       fullState = bufferToScreenState(buffer, dims.cols, dims.rows, client.title);
     }
@@ -821,7 +523,6 @@ export function startApiServer(options: ApiServerOptions): void {
         }
       }
 
-      // Recompose title on every delta (users/uptime change)
       client.title = composeTitle(session);
 
       const delta: any = {
@@ -853,10 +554,8 @@ export function startApiServer(options: ApiServerOptions): void {
           } else if (msg.keys) {
             bytes = msg.keys;
             if (msg.ctrl && bytes.length === 1) {
-              // Ctrl+key: convert to control character
               bytes = String.fromCharCode(bytes.toLowerCase().charCodeAt(0) - 96);
             } else if (msg.alt && bytes.length === 1) {
-              // Alt+key: ESC prefix
               bytes = '\x1b' + bytes;
             }
           } else {
@@ -872,7 +571,6 @@ export function startApiServer(options: ApiServerOptions): void {
           const rows = parseInt(msg.rows);
           if (cols > 0 && rows > 0 && cols <= 500 && rows <= 200) {
             session.pty.resize(cols, rows);
-            // Send full screen after resize
             setTimeout(() => {
               const buffer = session.pty.getBuffer();
               const dims = session.pty.getScreenDimensions();
@@ -889,20 +587,18 @@ export function startApiServer(options: ApiServerOptions): void {
           const dims = session.pty.getScreenDimensions();
           const tmuxId = session.pty.getTmuxId();
           const socketPath = session.pty.getSocketPath();
-          const tmuxPrefix = socketPath ? `tmux -S ${socketPath}` : 'tmux';
 
-          // Use tmux capture-pane for scroll — works with alternate screen
-          // -p = stdout, -e = include escapes, -S = start line, -E = end line
-          // Negative line numbers read from scrollback history
           const startLine = offset > 0 ? -offset : 0;
           const endLine = offset > 0 ? -offset + dims.rows - 1 : dims.rows - 1;
-          const captureCmd = `${tmuxPrefix} capture-pane -p -e -t ${tmuxId} -S ${startLine} -E ${endLine}`;
+
+          const tmuxArgs = socketPath
+            ? ['-S', socketPath, 'capture-pane', '-p', '-e', '-t', tmuxId, '-S', String(startLine), '-E', String(endLine)]
+            : ['capture-pane', '-p', '-e', '-t', tmuxId, '-S', String(startLine), '-E', String(endLine)];
 
           let capturedLines: string[];
           try {
-            const output = execSync(captureCmd, { encoding: 'utf-8', timeout: 5000 });
+            const output = execFileSync('tmux', tmuxArgs, { encoding: 'utf-8', timeout: 5000 });
             capturedLines = output.split('\n');
-            // capture-pane adds trailing newline
             if (capturedLines.length > 0 && capturedLines[capturedLines.length - 1] === '') {
               capturedLines.pop();
             }
@@ -911,7 +607,6 @@ export function startApiServer(options: ApiServerOptions): void {
             capturedLines = [];
           }
 
-          // Parse ANSI lines into span format
           const lines: any[] = [];
           for (let i = 0; i < dims.rows; i++) {
             if (i < capturedLines.length) {
@@ -921,7 +616,6 @@ export function startApiServer(options: ApiServerOptions): void {
             }
           }
 
-          // Get max scrollback for client bounds
           const maxScrollback = session.pty.getHistorySize();
 
           if (ws.readyState === WebSocket.OPEN) {
