@@ -67,6 +67,7 @@ Phase 1 (SSH multiplexer) and Phase 2 (Web API) are complete. Working directory 
 ## Pending Items
 
 [2026-04-03] Add terminal / launch profiles — approve stepped research (`docs/research/add-terminal.v03.md`), amend PRD (**orchestration vs API** + gaps), then implement (shared session-request module + profiles + lobby + API + persistence + remote)
+[2026-04-03] **OAuth + web API wiring** — full spec: `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` (index.ts → startApiServer, ACL parity, WS auth, `api.public_base_url`, feature flag `api.auth.required`)
 [2026-03-29] TUI widget system refactor — extract duplicated picker/input/nav patterns
 [2026-03-30] Configure OAuth providers (Google, Microsoft, GitHub) with real client IDs
 [2026-03-30] Wire OAuth/provisioner into index.ts startApiServer call
