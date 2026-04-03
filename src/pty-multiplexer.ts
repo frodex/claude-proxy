@@ -1,12 +1,21 @@
 // src/pty-multiplexer.ts
 
 import { spawn, type IPty } from 'node-pty';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
 import { resolve } from 'path';
 import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import xtermHeadless from '@xterm/headless';
 const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
+
+function execFileAsync(cmd: string, args: string[], options: { encoding: 'utf-8'; timeout: number }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, options, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
 
 interface PtyOptions {
   command: string;
@@ -43,6 +52,10 @@ export class PtyMultiplexer {
   private remoteHost?: string;
   private socketPath?: string;
   private onExitCallback?: (code: number) => void;
+  private settled = false;
+  private settleTimer: NodeJS.Timeout | null = null;
+  private screenCache: string | null = null;
+  private screenCacheReady = false;
 
   constructor(options: PtyOptions) {
     this.maxScrollback = options.scrollbackBytes;
@@ -160,6 +173,9 @@ export class PtyMultiplexer {
 
     // Attach to the session via a PTY
     this.attachToTmux(options.cols, options.rows);
+
+    // Warm screen cache async — available before vterm settles
+    this.warmCache().catch(() => {});
   }
 
   /**
@@ -185,6 +201,9 @@ export class PtyMultiplexer {
 
     console.log(`[tmux] reattaching to session ${mux.tmuxId}`);
     mux.attachToTmux(options.cols, options.rows);
+
+    // Warm screen cache async — available before vterm settles
+    mux.warmCache().catch(() => {});
 
     return mux;
   }
@@ -225,6 +244,17 @@ export class PtyMultiplexer {
       for (const client of this.clients.values()) {
         client.write(buf);
       }
+
+      // Settle detection: mark unsettled on each data chunk,
+      // settled after 200ms of silence
+      this.settled = false;
+      if (this.settleTimer) clearTimeout(this.settleTimer);
+      this.settleTimer = setTimeout(() => {
+        this.settled = true;
+        // Invalidate cache — vterm is now authoritative
+        this.screenCache = null;
+        this.screenCacheReady = false;
+      }, 200);
     });
 
     this.pty.onExit(({ exitCode }) => {
@@ -365,6 +395,55 @@ export class PtyMultiplexer {
    */
   getBuffer(): any {
     return this.vterm.buffer.active;
+  }
+
+  /**
+   * Whether the vterm has finished receiving initial data from tmux.
+   * True after 200ms of no PTY data.
+   */
+  isSettled(): boolean {
+    return this.settled;
+  }
+
+  /**
+   * Async cache warm — reads current screen from tmux directly.
+   * Called once at reattach/creation. Cache is served until vterm settles,
+   * then invalidated (vterm becomes authoritative).
+   */
+  async warmCache(): Promise<void> {
+    try {
+      const args = this.socketPath
+        ? ['-S', this.socketPath, 'capture-pane', '-p', '-t', this.tmuxId]
+        : ['capture-pane', '-p', '-t', this.tmuxId];
+
+      if (this.remoteHost) {
+        // Remote: ssh host tmux capture-pane -p -t id
+        const stdout = await execFileAsync('ssh', [this.remoteHost, 'tmux', ...args], { encoding: 'utf-8', timeout: 5000 });
+        this.screenCache = stdout;
+      } else {
+        const stdout = await execFileAsync('tmux', args, { encoding: 'utf-8', timeout: 2000 });
+        this.screenCache = stdout;
+      }
+      this.screenCacheReady = true;
+    } catch {
+      // tmux not ready yet or session gone — no cache, fall back to vterm
+      this.screenCache = null;
+      this.screenCacheReady = false;
+    }
+  }
+
+  /**
+   * Get the best available screen content for initial client connection.
+   * Priority: settled vterm > cache > unsettled vterm (partial, best effort).
+   */
+  getInitialScreen(): { source: 'vterm' | 'cache' | 'vterm-partial'; buffer?: any; text?: string } {
+    if (this.settled) {
+      return { source: 'vterm', buffer: this.vterm.buffer.active };
+    }
+    if (this.screenCacheReady && this.screenCache) {
+      return { source: 'cache', text: this.screenCache };
+    }
+    return { source: 'vterm-partial', buffer: this.vterm.buffer.active };
   }
 
   detachFromTmux(): void {

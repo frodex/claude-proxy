@@ -740,10 +740,34 @@ export function startApiServer(options: ApiServerOptions): void {
     streamClients.set(ws, client);
 
     // Send full screen state on connect
-    const buffer = session.pty.getBuffer();
     const dims = session.pty.getScreenDimensions();
     client.title = composeTitle(session);
-    const fullState = bufferToScreenState(buffer, dims.cols, dims.rows, client.title);
+    const initial = session.pty.getInitialScreen();
+
+    let fullState: any;
+    if (initial.source === 'cache' && initial.text) {
+      // Cache path — plain text from tmux capture-pane (no ANSI colors).
+      // Good enough for initial render; 30ms delta updates will replace
+      // with properly styled content once vterm settles.
+      const textLines = initial.text.split('\n');
+      const lines: Array<{ spans: Array<{ text: string }> }> = [];
+      for (let i = 0; i < dims.rows; i++) {
+        const text = textLines[i] || '';
+        lines.push({ spans: text ? [{ text }] : [] });
+      }
+      fullState = {
+        width: dims.cols,
+        height: dims.rows,
+        cursor: { x: 0, y: 0 },
+        title: client.title,
+        lines,
+      };
+    } else {
+      // vterm path — full styled buffer (settled or partial best-effort)
+      const buffer = initial.buffer ?? session.pty.getBuffer();
+      fullState = bufferToScreenState(buffer, dims.cols, dims.rows, client.title);
+    }
+
     ws.send(JSON.stringify({ type: 'screen', ...fullState }));
 
     // Register for screen changes
