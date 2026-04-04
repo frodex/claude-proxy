@@ -20,46 +20,53 @@ function makeSession(id: string, name: string, users: string[]): Session {
   return { id, name, runAsUser: 'root', createdAt: new Date(), sizeOwner: users[0] || '', clients, access: defaultAccess };
 }
 
-test('renderScreen shows sessions and commands', () => {
+test('renderScreen shows compact main menu (sessions not listed here)', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
   const sessions = [makeSession('1', 'bugfix', ['greg', 'sam']), makeSession('2', 'feature', ['alice'])];
   const output = lobby.renderScreen({ username: 'greg', sessions, cursor: 0, cols: 80, rows: 24 });
-  expect(output).toContain('bugfix');
-  expect(output).toContain('feature');
-  expect(output).toContain('New Claude session');
+  expect(output).not.toContain('bugfix');
+  expect(output).not.toContain('feature');
+  expect(output).toContain('Join a running session');
+  expect(output).toContain('New session');
 });
 
-test('renderScreen shows empty state', () => {
+test('renderScreen empty sessions still shows main menu', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
   const output = lobby.renderScreen({ username: 'greg', sessions: [], cursor: 0, cols: 80, rows: 24 });
-  expect(output).toContain('No active sessions');
-  expect(output).toContain('New terminal');
+  expect(output).toContain('Join a running session');
+  expect(output).toContain('[n]');
 });
 
-test('arrow down navigates', () => {
+test('arrow down navigates main menu', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
-  const sessions = [makeSession('1', 's1', ['greg']), makeSession('2', 's2', ['sam'])];
+  const sessions = [makeSession('1', 's1', ['greg'])];
   const result = lobby.handleInput(Buffer.from('\x1b[B'), sessions, 0);
   expect(result.type).toBe('navigate');
   if (result.type === 'navigate') expect(result.cursor).toBe(1);
 });
 
-test('enter selects current item', () => {
+test('enter on first row selects join_menu', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
   const sessions = [makeSession('1', 's1', ['greg'])];
   const result = lobby.handleInput(Buffer.from('\r'), sessions, 0);
   expect(result.type).toBe('select');
   if (result.type === 'select') {
-    expect(result.action).toBe('join');
-    expect(result.sessionIndex).toBe(0);
+    expect(result.action).toBe('join_menu');
   }
 });
 
-test('n triggers new Claude session flow', () => {
+test('n shortcut selects new_menu', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
   const result = lobby.handleInput(Buffer.from('n'), [], 0);
   expect(result.type).toBe('select');
-  if (result.type === 'select') expect(result.action).toBe('new:claude');
+  if (result.type === 'select') expect(result.action).toBe('new_menu');
+});
+
+test('j shortcut selects join_menu', () => {
+  const lobby = new Lobby({ motd: 'Welcome' });
+  const result = lobby.handleInput(Buffer.from('j'), [], 2);
+  expect(result.type).toBe('select');
+  if (result.type === 'select') expect(result.action).toBe('join_menu');
 });
 
 test('q triggers quit', () => {

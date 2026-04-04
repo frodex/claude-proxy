@@ -2,7 +2,6 @@
 
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import type { Session } from './types.js';
-import { listProfiles } from './launch-profiles.js';
 
 interface LobbyOptions {
   motd: string;
@@ -28,50 +27,19 @@ export class Lobby {
     this.motd = options.motd;
   }
 
-  buildSections(sessions: Session[]): MenuSection[] {
-    const sections: MenuSection[] = [];
-
-    if (sessions.length > 0) {
-      const sessionItems: MenuItem[] = sessions.map((s, i) => {
-        const userCount = s.clients.size;
-        const userWord = userCount === 1 ? 'user' : 'users';
-        const userNames = Array.from(s.clients.values()).map(c => c.username).join(', ');
-        const lock = s.access?.passwordHash ? ' [locked]' : '';
-        const vis = s.access?.public === false ? ' (private)' : '';
-        const vo = s.access?.viewOnly ? ' [view-only]' : '';
-        const owner = s.access?.owner ? ` \x1b[38;5;245m@${s.access.owner}\x1b[0m` : '';
-        const host = s.remoteHost ? ` \x1b[36m@${s.remoteHost}\x1b[0m` : '';
-        return {
-          label: `${s.name}${lock}${vis}${vo}${owner}${host} (${userCount} ${userWord}) [${userNames}]`,
-          key: `${i + 1}`,
-          action: `join:${i}`,
-        };
-      });
-
-      sections.push({ title: 'Active Sessions', items: sessionItems });
-    } else {
-      sections.push({
-        items: [{ label: 'No active sessions', action: 'none', disabled: true }],
-      });
-    }
-
-    const profileItems: MenuItem[] = listProfiles().map(p => ({
-      label: p.label,
-      key: p.key,
-      action: `new:${p.id}`,
-    }));
-
-    sections.push({
-      items: [
-        ...profileItems,
-        { label: 'Restart previous session', key: 'r', action: 'continue' },
-        { label: 'Fork a session', key: 'f', action: 'fork' },
-        { label: 'Export sessions', key: 'e', action: 'export' },
-        { label: 'Quit', key: 'q', action: 'quit' },
-      ],
-    });
-
-    return sections;
+  buildSections(_sessions: Session[]): MenuSection[] {
+    return [
+      {
+        items: [
+          { label: 'Join a running session', key: 'j', action: 'join_menu' },
+          { label: 'New session', key: 'n', action: 'new_menu' },
+          { label: 'Restart previous session', key: 'r', action: 'continue' },
+          { label: 'Fork a session', key: 'f', action: 'fork' },
+          { label: 'Export sessions', key: 'e', action: 'export' },
+          { label: 'Quit', key: 'q', action: 'quit' },
+        ],
+      },
+    ];
   }
 
   renderScreen(options: RenderOptions): string {
@@ -106,13 +74,6 @@ export class Lobby {
     if (str === '\r' || str === '\n' || str === ' ') {
       const action = getActionAtCursor(sections, cursor);
       if (action) {
-        if (action.startsWith('join:')) {
-          const idx = parseInt(action.split(':')[1]);
-          return { type: 'select', action: 'join', sessionIndex: idx };
-        }
-        if (action.startsWith('new:')) {
-          return { type: 'select', action };
-        }
         return { type: 'select', action };
       }
       return { type: 'none' };
@@ -121,10 +82,6 @@ export class Lobby {
     // Shortcut keys
     const found = findItemByKey(sections, str);
     if (found) {
-      if (found.action.startsWith('join:')) {
-        const idx = parseInt(found.action.split(':')[1]);
-        return { type: 'select', action: 'join', sessionIndex: idx };
-      }
       return { type: 'select', action: found.action };
     }
 

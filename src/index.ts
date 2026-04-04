@@ -31,7 +31,7 @@ import { SQLiteUserStore } from './auth/user-store.js';
 import { SocketManager } from './ugo/socket-manager.js';
 import { GroupWatcher } from './ugo/group-watcher.js';
 import { executeCrossFork as runCrossFork, isToolAvailable as isClaudeForkAvailable } from './claude-fork-client.js';
-import { getProfile, buildCommandArgs, resolveCommand } from './launch-profiles.js';
+import { getProfile, buildCommandArgs, resolveCommand, listProfiles } from './launch-profiles.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -105,6 +105,12 @@ const exportFlows: Map<string, { picker: CheckboxPicker; sessions: ExportableSes
 
 const forkPickerFlows: Map<string, { picker: ListPicker; sessions: Session[] }> = new Map();
 
+/** Main lobby → full-screen list of sessions to join */
+const joinSessionPickerFlows: Map<string, { picker: ListPicker; sessions: Session[] }> = new Map();
+
+/** Main lobby → full-screen list of launch profiles, then session form */
+const newProfilePickerFlows: Map<string, { picker: ListPicker; profileIds: string[] }> = new Map();
+
 const transport = new SSHTransport({
   port: config.port,
   host: config.host,
@@ -115,6 +121,9 @@ const transport = new SSHTransport({
 function showLobby(client: Client): void {
   const state = clientState.get(client.id);
   if (!state) return;
+
+  joinSessionPickerFlows.delete(client.id);
+  newProfilePickerFlows.delete(client.id);
 
   state.mode = 'lobby';
   state.sessionId = undefined;
@@ -131,6 +140,108 @@ function showLobby(client: Client): void {
     rows: client.termSize.rows,
   });
   client.write(output);
+}
+
+function startJoinSessionPicker(client: Client): void {
+  const sessions = sessionManager.listSessionsForUser(client.username);
+  const items =
+    sessions.length === 0
+      ? [{ label: '(No sessions available — Esc to go back)', disabled: true as const }]
+      : sessions.map((s) => {
+          const userCount = s.clients.size;
+          const userWord = userCount === 1 ? 'user' : 'users';
+          const userNames = Array.from(s.clients.values()).map(c => c.username).join(', ');
+          const lock = s.access?.passwordHash ? ' [locked]' : '';
+          const vis = s.access?.public === false ? ' (private)' : '';
+          const vo = s.access?.viewOnly ? ' [view-only]' : '';
+          const owner = s.access?.owner ? ` @${s.access.owner}` : '';
+          const host = s.remoteHost ? ` @${s.remoteHost}` : '';
+          return {
+            label: `${s.name}${lock}${vis}${vo}${owner}${host} (${userCount} ${userWord}) [${userNames}]`,
+          };
+        });
+
+  const picker = new ListPicker({
+    items,
+    title: 'Join a running session',
+    hint: 'arrows to select, enter to join, Esc=back to main menu',
+  });
+  joinSessionPickerFlows.set(client.id, { picker, sessions });
+  client.write(renderListPicker(picker.state));
+}
+
+function handleJoinSessionPickerInput(client: Client, data: Buffer): void {
+  const flow = joinSessionPickerFlows.get(client.id);
+  if (!flow) return;
+
+  const key = parseKey(data);
+  const event = flow.picker.handleKey(key);
+
+  if (event.type === 'cancel') {
+    joinSessionPickerFlows.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (event.type === 'select') {
+    if (flow.sessions.length === 0) return;
+    const target = flow.sessions[event.index];
+    if (!target) return;
+    joinSessionPickerFlows.delete(client.id);
+    const check = sessionManager.canUserJoin(client.username, target.id);
+    if (check.needsPassword) {
+      passwordFlow.set(client.id, { sessionId: target.id, buffer: '' });
+      client.write('\x1b[2J\x1b[H');
+      client.write(`Password for "${target.name}": `);
+      return;
+    }
+    if (check.allowed) {
+      joinSession(client, target.id);
+    }
+    return;
+  }
+
+  if (event.type === 'navigate') {
+    client.write(renderListPicker(flow.picker.state));
+  }
+}
+
+function startNewProfilePicker(client: Client): void {
+  const profiles = listProfiles();
+  const picker = new ListPicker({
+    items: profiles.map(p => ({ label: p.label })),
+    title: 'New session — choose type',
+    hint: 'arrows to select, enter to continue, Esc=back to main menu',
+  });
+  newProfilePickerFlows.set(client.id, { picker, profileIds: profiles.map(p => p.id) });
+  client.write(renderListPicker(picker.state));
+}
+
+function handleNewProfilePickerInput(client: Client, data: Buffer): void {
+  const flow = newProfilePickerFlows.get(client.id);
+  if (!flow) return;
+
+  const key = parseKey(data);
+  const event = flow.picker.handleKey(key);
+
+  if (event.type === 'cancel') {
+    newProfilePickerFlows.delete(client.id);
+    showLobby(client);
+    return;
+  }
+
+  if (event.type === 'select') {
+    const profileId = flow.profileIds[event.index];
+    if (!profileId) return;
+    newProfilePickerFlows.delete(client.id);
+    console.log(`[lobby] ${client.username} starting new session flow (profile: ${profileId})`);
+    startNewSessionFlow(client, profileId);
+    return;
+  }
+
+  if (event.type === 'navigate') {
+    client.write(renderListPicker(flow.picker.state));
+  }
 }
 
 function joinSession(client: Client, sessionId: string): void {
@@ -897,6 +1008,16 @@ transport.onConnect((client) => {
       return;
     }
 
+    if (joinSessionPickerFlows.has(client.id)) {
+      handleJoinSessionPickerInput(client, data);
+      return;
+    }
+
+    if (newProfilePickerFlows.has(client.id)) {
+      handleNewProfilePickerInput(client, data);
+      return;
+    }
+
     if (restartFlows.has(client.id)) {
       handleRestartInput(client, data);
       return;
@@ -940,27 +1061,10 @@ transport.onConnect((client) => {
           showLobby(client);
           break;
         case 'select':
-          if (result.action === 'join' && result.sessionIndex !== undefined) {
-            const target = sessions[result.sessionIndex];
-            if (target) {
-              const check = sessionManager.canUserJoin(client.username, target.id);
-              if (check.needsPassword) {
-                passwordFlow.set(client.id, { sessionId: target.id, buffer: '' });
-                client.write('\x1b[2J\x1b[H');
-                client.write(`Password for "${target.name}": `);
-                break;
-              }
-              if (check.allowed) {
-                joinSession(client, target.id);
-              }
-            }
-          } else if (result.action.startsWith('new:')) {
-            const profileId = result.action.split(':')[1];
-            console.log(`[lobby] ${client.username} starting new session flow (profile: ${profileId})`);
-            startNewSessionFlow(client, profileId);
-          } else if (result.action === 'new') {
-            console.log(`[lobby] ${client.username} starting new session flow`);
-            startNewSessionFlow(client, 'claude');
+          if (result.action === 'join_menu') {
+            startJoinSessionPicker(client);
+          } else if (result.action === 'new_menu') {
+            startNewProfilePicker(client);
           } else if (result.action === 'continue') {
             startResumeFlow(client);
           } else if (result.action === 'fork') {
@@ -984,6 +1088,16 @@ transport.onConnect((client) => {
     if (!state) return;
 
     if (state.mode === 'lobby') {
+      if (joinSessionPickerFlows.has(client.id)) {
+        const jf = joinSessionPickerFlows.get(client.id);
+        if (jf) client.write(renderListPicker(jf.picker.state));
+        return;
+      }
+      if (newProfilePickerFlows.has(client.id)) {
+        const nf = newProfilePickerFlows.get(client.id);
+        if (nf) client.write(renderListPicker(nf.picker.state));
+        return;
+      }
       showLobby(client);
     } else if (state.mode === 'session' && state.sessionId) {
       sessionManager.handleResize(state.sessionId, client, size);
@@ -998,6 +1112,8 @@ transport.onConnect((client) => {
     clientState.delete(client.id);
     creationFlows.delete(client.id);
     forkPickerFlows.delete(client.id);
+    joinSessionPickerFlows.delete(client.id);
+    newProfilePickerFlows.delete(client.id);
   });
 
   showLobby(client);
