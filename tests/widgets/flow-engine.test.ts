@@ -130,7 +130,8 @@ test('getFlowSummary uses displayValue callback for completed steps', () => {
   expect(summary[0].fieldState).toBe('completed');
   expect(summary[0].value).toBe('my-project');
   expect(summary[1].fieldState).toBe('active');
-  expect(summary[1].value).toBeUndefined();
+  // Active row shows displayValue even before the step is completed (effective default)
+  expect(summary[1].value).toBe('No');
 });
 
 test('getFlowSummary marks skipped conditional steps as grayed', () => {

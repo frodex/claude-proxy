@@ -272,10 +272,15 @@ function getDisplayValue(field: FieldConfig, acc: Record<string, any>): string {
   const key = FIELD_TO_KEY[field.id] ?? field.id;
   const val = acc[key];
   if (val === undefined || val === null) {
-    // Field-specific defaults for display
+    // Field-specific defaults for display (match widget defaults — visible before first edit)
     if (field.id === 'server') return 'local';
     if (field.id === 'workdir') return '~ (home directory)';
     if (field.id === 'runas') return acc._defaultUser || 'root';
+    if (field.widget === 'yesno' && field.default !== undefined) {
+      return field.default ? 'Yes' : 'No';
+    }
+    if (field.widget === 'checkbox') return '(none selected)';
+    if (field.id === 'password') return '(none)';
     return '';
   }
   if (typeof val === 'boolean') return val ? 'Yes' : 'No';

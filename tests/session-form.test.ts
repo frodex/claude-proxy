@@ -124,6 +124,19 @@ test('dangermode field hidden for shell profile', () => {
   expect(dangerStep!.condition?.(shellAcc)).toBe(false);
 });
 
+test('displayValue shows YAML defaults before fields are committed', () => {
+  const mockClient = { username: 'root', id: 'test', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: () => {}, lastKeystroke: 0 };
+  const steps = buildSessionFormSteps('create', mockClient, {});
+  const hidden = steps.find(s => s.id === 'hidden');
+  const publicField = steps.find(s => s.id === 'public');
+  const password = steps.find(s => s.id === 'password');
+  const users = steps.find(s => s.id === 'users');
+  expect(hidden!.displayValue!({})).toBe('No');
+  expect(publicField!.displayValue!({ hidden: false })).toBe('Yes');
+  expect(password!.displayValue!({})).toBe('(none)');
+  expect(users!.displayValue!({})).toBe('(none selected)');
+});
+
 test('claudeSessionId field hidden for shell profile', () => {
   _resetConfigCache();
   const mockClient = { username: 'root', id: 'test', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: () => {}, lastKeystroke: 0 };

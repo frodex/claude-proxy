@@ -227,12 +227,25 @@ export class FlowEngine {
           return { id: step.id, label: step.label, fieldState: 'completed' as const, value };
         }
         if (i === this.currentIndex) {
-          return { id: step.id, label: step.label, fieldState: 'active' as const };
+          const raw = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+          const str = raw !== undefined && raw !== null ? String(raw) : '';
+          return {
+            id: step.id,
+            label: step.label,
+            fieldState: 'active' as const,
+            ...(str.length > 0 ? { value: str } : {}),
+          };
         }
         if (step.condition && !step.condition(this.accumulated)) {
           return { id: step.id, label: step.label, fieldState: 'grayed' as const };
         }
-        return { id: step.id, label: step.label, fieldState: 'pending' as const };
+        const pendingVal = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+        return {
+          id: step.id,
+          label: step.label,
+          fieldState: 'pending' as const,
+          value: pendingVal || undefined,
+        };
       });
     }
 
@@ -266,15 +279,12 @@ export class FlowEngine {
           return { ...base, fieldState: 'locked' as const, value, isCursor: true };
         }
         const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
-        const hasValue =
-          this.completedSteps.has(i) &&
-          value !== undefined &&
-          value !== null &&
-          String(value).length > 0;
+        const str = value !== undefined && value !== null ? String(value) : '';
+        // Show effective value on the active row whenever displayValue resolves (including YAML/widget defaults)
         return {
           ...base,
           fieldState: 'active' as const,
-          ...(hasValue ? { value: String(value) } : {}),
+          ...(str.length > 0 ? { value: str } : {}),
         };
       }
       // Check if field would be locked
