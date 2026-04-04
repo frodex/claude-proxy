@@ -71,43 +71,52 @@ export class PtyMultiplexer {
       allowProposedApi: true,
     });
 
-    // Build the command to run inside tmux
-    let innerCommand: string;
-
     // Shell-safe quoting for working directory (mkdir -p so new dirs work)
     const safeDir = options.workingDir?.replace(/'/g, "'\\''");
     const cdPrefix = options.workingDir
       ? `mkdir -p '${safeDir}' && cd '${safeDir}' && `
       : '';
 
-    if (this.remoteHost) {
-      // Remote — use the remote launcher script which handles install/update prompts
-      // The script is deployed to the remote host below in the launch block
-      innerCommand = '';  // built in the remote launch block
-    } else {
-      // Local — use launcher script
-      const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude.sh');
-      if (options.runAsUser) {
-        if (options.command === 'claude') {
-          const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
-          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${launcherPath}${argsStr}'`;
-        } else {
-          let commandPath = options.command;
-          try { commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim(); } catch {}
-          const fullCmd = [commandPath, ...options.args].join(' ');
-          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${fullCmd}'`;
-        }
-      } else {
-        if (options.command === 'claude') {
-          innerCommand = `${cdPrefix}${launcherPath}`;
-        } else {
-          innerCommand = `${cdPrefix}${[options.command, ...options.args].join(' ')}`;
-        }
-      }
-    }
+    const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude.sh');
 
-    if (this.remoteHost) {
-      // Remote session — scp launcher + wrapper scripts, then run in tmux
+    // Build the command to run inside tmux (local sessions only — set below)
+    let innerCommand: string;
+
+    if (this.remoteHost && options.command !== 'claude') {
+      // Remote shell / Cursor / etc. — must NOT use launch-claude-remote.sh (that forwards args to `claude`)
+      const remoteScript = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
+      let innerGeneric: string;
+      if (options.runAsUser) {
+        const fullCmd = [options.command, ...options.args].join(' ');
+        innerGeneric = `su - ${options.runAsUser} -c '${cdPrefix}${fullCmd}'`;
+      } else {
+        innerGeneric = `${cdPrefix}${[options.command, ...options.args].join(' ')}`;
+      }
+      const localStaging = `/tmp/claude-proxy-generic-remote-${this.tmuxId}.sh`;
+      writeFileSync(
+        localStaging,
+        `#!/bin/bash\nrm -f "${remoteScript}"\n${innerGeneric}\n`,
+        { mode: 0o755 },
+      );
+      try {
+        execSync(`scp -q "${localStaging}" ${this.remoteHost}:${remoteScript}`, { stdio: 'pipe' });
+        try {
+          unlinkSync(localStaging);
+        } catch {}
+        execSync(
+          `ssh ${this.remoteHost} "tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${remoteScript}"`,
+          { stdio: 'pipe' },
+        );
+        console.log(`[tmux] created remote session ${this.tmuxId} on ${this.remoteHost} (${options.command})`);
+      } catch (err: any) {
+        try {
+          unlinkSync(localStaging);
+        } catch {}
+        console.error(`[tmux] failed to create remote session: ${err.message}`);
+        throw err;
+      }
+    } else if (this.remoteHost && options.command === 'claude') {
+      // Remote Claude — scp launcher + wrapper scripts, then run in tmux
       const remoteScript = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
       const remoteLauncher = `/tmp/claude-proxy-launcher-${this.tmuxId}.sh`;
       const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
@@ -155,6 +164,24 @@ export class PtyMultiplexer {
       }
     } else {
       // Local session — use temp script to avoid quote escaping
+      if (options.runAsUser) {
+        if (options.command === 'claude') {
+          const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
+          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${launcherPath}${argsStr}'`;
+        } else {
+          let commandPath = options.command;
+          try {
+            commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim();
+          } catch {}
+          const fullCmd = [commandPath, ...options.args].join(' ');
+          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${fullCmd}'`;
+        }
+      } else if (options.command === 'claude') {
+        innerCommand = `${cdPrefix}${launcherPath}`;
+      } else {
+        innerCommand = `${cdPrefix}${[options.command, ...options.args].join(' ')}`;
+      }
+
       const scriptPath = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
       writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
 
