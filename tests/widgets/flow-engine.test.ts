@@ -186,6 +186,22 @@ test('navigate mode: arrow up moves to previous visible field', () => {
   expect(summary[0].fieldState).toBe('active');
 });
 
+test('navigate mode: cursor on a completed row shows active (arrow), not completed checkmark', () => {
+  const flow = new FlowEngine(twoStepFlow);
+  flow.setMode('navigate');
+  flow.handleKey(parseKey(Buffer.from('\r'))); // enter edit on name
+  flow.handleKey(parseKey(Buffer.from('my-session')));
+  flow.handleKey(parseKey(Buffer.from('\r'))); // submit — cursor advances to hidden
+  let s = flow.getFlowSummary();
+  expect(s[0].fieldState).toBe('completed');
+  expect(s[1].fieldState).toBe('active');
+  flow.handleKey(parseKey(Buffer.from('\x1b[A'))); // back up to name
+  s = flow.getFlowSummary();
+  expect(s[0].fieldState).toBe('active');
+  expect(s[0].value).toBe('my-session');
+  expect(s[1].fieldState).toBe('pending');
+});
+
 test('navigate mode: Enter switches to edit mode', () => {
   const flow = new FlowEngine(twoStepFlow);
   flow.setMode('navigate');

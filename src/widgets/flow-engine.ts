@@ -249,7 +249,12 @@ export class FlowEngine {
         }
         return { ...base, fieldState: 'editing' as const };
       }
-      if (this.completedSteps.has(i)) {
+      // Completed rows show checkmark only when the cursor is NOT on them in navigate mode.
+      // Otherwise (cursor on a completed row) use active + value so the > arrow stays visible.
+      if (
+        this.completedSteps.has(i) &&
+        !(i === this.currentIndex && this.mode === 'navigate')
+      ) {
         const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
         return { ...base, fieldState: 'completed' as const, value };
       }
@@ -260,7 +265,17 @@ export class FlowEngine {
           const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
           return { ...base, fieldState: 'locked' as const, value, isCursor: true };
         }
-        return { ...base, fieldState: 'active' as const };
+        const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
+        const hasValue =
+          this.completedSteps.has(i) &&
+          value !== undefined &&
+          value !== null &&
+          String(value).length > 0;
+        return {
+          ...base,
+          fieldState: 'active' as const,
+          ...(hasValue ? { value: String(value) } : {}),
+        };
       }
       // Check if field would be locked
       const value = step.displayValue ? step.displayValue(this.accumulated) : this.defaultDisplayValue(step.id);
