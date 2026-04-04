@@ -184,8 +184,17 @@ export class ProxyOperations {
     return this.sessionToInfo(session);
   }
 
-  listDeadSessions(): DeadSessionInfo[] {
-    const dead = listDeadSessions();
+  /**
+   * Dead sessions visible to `username`. When `username` is omitted (e.g. internal callers),
+   * returns all dead sessions (legacy).
+   */
+  listDeadSessions(username?: string): DeadSessionInfo[] {
+    let dead = listDeadSessions();
+    if (username !== undefined) {
+      dead = dead.filter(
+        d => d.access && canUserAccessSession(username, d.access),
+      );
+    }
     return dead.map(d => ({
       id: d.tmuxId,
       name: d.name,

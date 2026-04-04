@@ -16,6 +16,7 @@ import type { GitHubAdapter } from './auth/github-adapter.js';
 import type { UserStore, Provisioner } from './auth/types.js';
 import { ProxyOperations, composeTitle, parseAnsiLine } from './operations.js';
 import { validateSessionCookie } from './auth/session-cookie.js';
+import { canUserAccessSession } from './user-utils.js';
 
 // Key translation: structured browser input → PTY escape sequences
 const SPECIAL_KEYS: Record<string, string> = {
@@ -239,12 +240,15 @@ export function startApiServer(options: ApiServerOptions): void {
     }
 
     if (url.pathname === '/api/auth/me' && req.method === 'GET') {
-      const { validateSessionCookie } = await import('./auth/session-cookie.js');
+      if (!cookieSecret) {
+        json(res, 501, { error: 'Web authentication not configured' });
+        return;
+      }
       const cookieHeader = req.headers.cookie || '';
       const cookies = parseCookies(cookieHeader);
       const sessionCookie = cookies['session'];
 
-      if (!sessionCookie || !cookieSecret) {
+      if (!sessionCookie) {
         json(res, 401, { error: 'Not authenticated' });
         return;
       }
@@ -285,7 +289,7 @@ export function startApiServer(options: ApiServerOptions): void {
     if (url.pathname === '/api/sessions/dead' && req.method === 'GET') {
       const user = requireAuth(req, res); if (!user) return;
       try {
-        json(res, 200, ops.listDeadSessions());
+        json(res, 200, ops.listDeadSessions(user.linuxUser));
       } catch (err: any) {
         errorResponse(res, err);
       }
@@ -354,14 +358,16 @@ export function startApiServer(options: ApiServerOptions): void {
       return;
     }
 
-    // --- Supporting endpoints ---
+    // --- Supporting endpoints (authenticated when web auth enabled — W1 §4.2) ---
 
     if (url.pathname === '/api/remotes' && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       json(res, 200, ops.listRemotes());
       return;
     }
 
     if (url.pathname === '/api/users' && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       try {
         json(res, 200, ops.listUsers());
       } catch (err: any) {
@@ -371,6 +377,7 @@ export function startApiServer(options: ApiServerOptions): void {
     }
 
     if (url.pathname === '/api/groups' && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       try {
         json(res, 200, ops.listGroups());
       } catch (err: any) {
@@ -390,6 +397,7 @@ export function startApiServer(options: ApiServerOptions): void {
     }
 
     if (url.pathname === '/api/directories' && req.method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
       json(res, 200, { history: ops.getDirectoryHistory() });
       return;
     }
@@ -450,6 +458,24 @@ export function startApiServer(options: ApiServerOptions): void {
     if (!session || !session.pty) {
       ws.close(4004, 'Session not found');
       return;
+    }
+
+    if (apiAuthRequired && cookieSecret) {
+      const cookies = parseCookies(req.headers.cookie || '');
+      const sessionCookie = cookies['session'];
+      if (!sessionCookie) {
+        ws.close(4401, 'Unauthorized');
+        return;
+      }
+      const payload = validateSessionCookie(sessionCookie, cookieSecret);
+      if (!payload) {
+        ws.close(4401, 'Unauthorized');
+        return;
+      }
+      if (!canUserAccessSession(payload.linuxUser, session.access)) {
+        ws.close(4403, 'Forbidden');
+        return;
+      }
     }
 
     console.log(`[api] WebSocket connected to session ${sessionId}`);

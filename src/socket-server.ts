@@ -262,7 +262,7 @@ export class SocketServer {
           respond(ops.createSession(p.body as CreateSessionRequest, (p.user as string) || 'root'));
           break;
         case 'listDeadSessions':
-          respond(ops.listDeadSessions());
+          respond(ops.listDeadSessions((p.user as string) || undefined));
           break;
         case 'destroySession':
           ops.destroySession(p.sessionId as string, (p.user as string) || 'root');

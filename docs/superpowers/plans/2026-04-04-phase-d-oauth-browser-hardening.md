@@ -27,15 +27,17 @@
 
 ---
 
-## Task 0: W1 wiring spec — verification gate
+## Task 0: W1 wiring spec — verification gate ✅ (2026-04-04)
 
-**Files:** `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` (checklist), `src/api-server.ts`, `src/index.ts`
+**Files:** `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` §13, `src/api-server.ts`, `src/operations.ts`, `tests/api-auth-wiring.test.ts`
 
-**Purpose:** Phase D assumes **`GET /api/auth/callback`**, **`GET /api/auth/login`**, protected **`/api/*`** when `api.auth.required`, and **WebSocket** auth per spec §5.8 are **implemented and tested**. If not, finish W1 tasks first (separate PR) so Phase D does not debug ACL and PKCE at once.
+**Purpose:** Phase D assumes W1 HTTP ACL + WS cookie checks are in place.
 
-- [ ] **Step 1:** Walk spec §4–§7 and mark each route behavior **pass/fail** against `api-server.ts`.
-- [ ] **Step 2:** Run or add **`tests/api-auth-wiring.test.ts`** (spec §10.2) — `POST /api/sessions` without cookie → **401** when required.
-- [ ] **Step 3:** Document gaps in spec (or fix) before Task 1 below.
+- [x] **Step 1:** Walk spec §4–§7 — record in spec **§13 Verification record**.
+- [x] **Step 2:** Added **`tests/api-auth-wiring.test.ts`** + **`listDeadSessions` filter test** in `operations.test.ts`.
+- [x] **Step 3:** Gaps closed in code: **`/api/remotes|users|groups|directories`** require auth; **WebSocket** validates cookie + **`canUserAccessSession`**; **`/api/auth/me`** returns **501** when no `session.secret`; **`listDeadSessions(username)`** filters by ACL.
+
+**Residual (Phase D, not W1):** explicit YAML **`api.auth.required`** separate from cookie presence; static **`web/login.html`**.
 
 ---
 

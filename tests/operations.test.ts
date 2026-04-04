@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ProxyOperations, composeTitle, parseAnsiLine } from '../src/operations.js';
 import type { Session, SessionAccess, Config } from '../src/types.js';
 import type { OperationError } from '../src/operation-types.js';
@@ -405,6 +405,10 @@ describe('ProxyOperations', () => {
   });
 
   describe('listDeadSessions', () => {
+    afterEach(() => {
+      vi.mocked(canUserAccessSession).mockReturnValue(true);
+    });
+
     test('maps dead session data to DeadSessionInfo[]', () => {
       vi.mocked(listDeadSessions).mockReturnValue([
         {
@@ -426,6 +430,32 @@ describe('ProxyOperations', () => {
       expect(result[0].claudeSessionId).toBe('abc-123');
       expect(result[0].workingDir).toBe('/srv/app');
       expect(result[0].remoteHost).toBeNull();
+    });
+
+    test('filters by username when provided (W1 §5.3)', () => {
+      vi.mocked(listDeadSessions).mockReturnValue([
+        {
+          tmuxId: 'cp-a',
+          name: 'alice-dead',
+          runAsUser: 'root',
+          createdAt: '2025-01-01T00:00:00Z',
+          access: makeAccess({ owner: 'alice', public: false, allowedUsers: ['alice'] }),
+        },
+        {
+          tmuxId: 'cp-b',
+          name: 'bob-dead',
+          runAsUser: 'root',
+          createdAt: '2025-01-01T00:00:00Z',
+          access: makeAccess({ owner: 'bob', public: false, allowedUsers: ['bob'] }),
+        },
+      ] as any);
+      vi.mocked(canUserAccessSession).mockImplementation(
+        (u: string, a: { owner: string }) => u === a.owner,
+      );
+
+      const forAlice = ops.listDeadSessions('alice');
+      expect(forAlice).toHaveLength(1);
+      expect(forAlice[0].id).toBe('cp-a');
     });
   });
 

@@ -1,7 +1,7 @@
 # OAuth + Web API wiring specification
 
 **Date:** 2026-04-03  
-**Status:** Draft — implementation checklist  
+**Status:** Implemented (W1 core verified 2026-04-04) — see §13  
 **Purpose:** Fully specify how OAuth, session cookies, and HTTP/WebSocket API identity align so the web UI can be built and tested on real auth. Supersedes scattered TODOs in handoff docs with one executable contract.
 
 **Unified project:** Dashboard and checklist **`docs/integration/UNIFIED-PROJECT.md`** (claude-proxy — platform-first). svg-terminal holds **client** integration stepped files under its `docs/integration/`. When OAuth wiring ships, update svg-terminal’s WS/screen `fetch` paths per dependency note there.
@@ -335,4 +335,28 @@ Use **exact** scheme/host/port.
 
 ---
 
-*End of wiring spec — implement in one PR; update this doc status to **Implemented** with commit hash when merged.*
+---
+
+## 13. Verification record (2026-04-04)
+
+Cleared with implementation review + tests. Residual items are **Phase D** (PKCE, CSRF, encrypted cookies, `web/login.html` polish) — see `docs/superpowers/plans/2026-04-04-phase-d-oauth-browser-hardening.md`.
+
+| § | Requirement | Result |
+|---|-------------|--------|
+| 1 | `index.ts` wires OAuth, UserStore, cookies into `startApiServer` | **Pass** — see `index.ts` |
+| 3–6 | ACL via `operations` + `requireAuth` | **Pass** — `createSession`, list, screen use `user.linuxUser` |
+| 4.2 | Protected routes 401 without cookie when `cookieSecret` set | **Pass** — `apiAuthRequired = !!cookieSecret`; `/api/remotes`, `/api/users`, `/api/groups`, `/api/directories` now require auth |
+| 4.4 | `GET /api/auth/me` when no `session.secret` | **Pass** — returns **501** `Web authentication not configured` |
+| 5.1 | `GET /api/sessions` scoped | **Pass** — `ops.listSessions(user.linuxUser)` |
+| 5.3 | `GET /api/sessions/dead` scoped | **Pass** — `ops.listDeadSessions(user.linuxUser)` |
+| 5.5 | `GET screen` ACL | **Pass** — `ops.getSessionScreen(..., user.linuxUser)` |
+| 5.6–5.7 | users/groups/remotes/directories require auth | **Pass** |
+| 5.8 | WebSocket stream cookie + `canUserAccessSession` | **Pass** — closes **4401** / **4403** when `apiAuthRequired` |
+| §7 | `api.auth.required` YAML flag | **Partial** — behavior tied to presence of **`cookieSecret`**; explicit `api.auth.required` not yet wired (optional hardening) |
+| §8 | Static `web/login.html` | **Pending Phase D** |
+
+**Automated tests:** `tests/api-auth-wiring.test.ts` (401 without cookie on `/api/remotes`, 200 with valid cookie); `tests/operations.test.ts` — `listDeadSessions` user filter.
+
+---
+
+*End of wiring spec — W1 core complete; Phase D continues OAuth hardening.*

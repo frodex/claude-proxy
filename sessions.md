@@ -66,7 +66,7 @@
 [2026-04-03] ~~Execute Phase C~~ — **DONE.** Socket server, svg-terminal client, `api.socket` in YAML, live restart + `svg-terminal.service` on host. PRD-006 + journal above.
 [2026-04-03] **Execute launch profiles** — independent, can run parallel with Phase A (plan written)
 [2026-04-03] **Security remediation pass** — ~95 out-of-scope findings (pty-multiplexer, scripts, systemd, svg-terminal) tracked in research v03 §13
-[2026-04-03] **Phase D (OAuth hardening + login UX)** — Plan: `docs/superpowers/plans/2026-04-04-phase-d-oauth-browser-hardening.md` (PKCE, CSRF, AES cookie, `web/login`, svg-terminal redirects). **Gate:** verify `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` (W1) first.
+[2026-04-03] **Phase D (OAuth hardening + login UX)** — Plan: `docs/superpowers/plans/2026-04-04-phase-d-oauth-browser-hardening.md`. **W1 gate cleared** 2026-04-04 — see `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` §13.
 [2026-04-03] Phase W2+: live web UI via svg-terminal dashboard (plan not yet written, depends on Phase A+C)
 [2026-03-30] Configure OAuth providers with real client IDs
 [2026-03-28] Docker packaging with Vault companion
