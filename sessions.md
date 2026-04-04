@@ -64,7 +64,7 @@
 
 [2026-04-03] ~~Execute Phase A~~ — **DONE.** Operations module, auth wired, security hardening, 293 tests passing, restart verified
 [2026-04-03] ~~Execute Phase C~~ — **DONE.** Socket server, svg-terminal client, `api.socket` in YAML, live restart + `svg-terminal.service` on host. PRD-006 + journal above.
-[2026-04-03] **Execute launch profiles** — independent, can run parallel with Phase A (plan written)
+[2026-04-03] ~~**Execute launch profiles**~~ — **DONE** 2026-04-03 (`feat: launch profiles` on dev). Registry, lobby `new:profileId`, `StoredSession.launchProfile`, operations `createSession`/`restartSession`, form gating, backfill by capability.
 [2026-04-03] **Security remediation pass** — ~95 out-of-scope findings (pty-multiplexer, scripts, systemd, svg-terminal) tracked in research v03 §13
 [2026-04-03] **Phase D (OAuth hardening + login UX)** — Plan: `docs/superpowers/plans/2026-04-04-phase-d-oauth-browser-hardening.md`. **W1 gate cleared** 2026-04-04 — see `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` §13.
 [2026-04-03] Phase W2+: live web UI via svg-terminal dashboard (plan not yet written, depends on Phase A+C)
