@@ -28,12 +28,12 @@ test('name field is required', () => {
   expect(name?.required).toBe(true);
 });
 
-test('runas is locked on edit, restart, and fork', () => {
+test('runas is locked on edit and restart, unlocked on fork and create', () => {
   const config = loadSessionFormConfig();
   const runas = config.fields.find(f => f.id === 'runas');
   expect(runas?.modes.edit.locked).toBe(true);
   expect(runas?.modes.restart.locked).toBe(true);
-  expect(runas?.modes.fork.locked).toBe(true);
+  expect(runas?.modes.fork.locked).toBe(false);   // unlocked: cross-user fork creates new process
   expect(runas?.modes.create.locked).toBe(false);
 });
 
@@ -108,4 +108,32 @@ test('buildSessionFormSteps fork mode prefills name with fork suffix', () => {
   const nameStep = steps.find(s => s.id === 'name');
   const widget = nameStep!.createWidget({});
   expect(widget.state.buffer).toContain('my-session-fork_');
+});
+
+test('dangermode field hidden for shell profile', () => {
+  _resetConfigCache();
+  const mockClient = { username: 'root', id: 'test', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: () => {}, lastKeystroke: 0 };
+  const steps = buildSessionFormSteps('create', mockClient, {});
+  const dangerStep = steps.find(s => s.id === 'dangermode');
+  expect(dangerStep).toBeDefined();
+
+  const claudeAcc = { _isAdmin: true, _launchProfile: 'claude' };
+  expect(dangerStep!.condition?.(claudeAcc)).toBe(true);
+
+  const shellAcc = { _isAdmin: true, _launchProfile: 'shell' };
+  expect(dangerStep!.condition?.(shellAcc)).toBe(false);
+});
+
+test('claudeSessionId field hidden for shell profile', () => {
+  _resetConfigCache();
+  const mockClient = { username: 'root', id: 'test', transport: 'ssh' as const, termSize: { cols: 80, rows: 24 }, write: () => {}, lastKeystroke: 0 };
+  const steps = buildSessionFormSteps('edit', mockClient, {});
+  const sessionIdStep = steps.find(s => s.id === 'claudeSessionId');
+  expect(sessionIdStep).toBeDefined();
+
+  const claudeAcc = { _launchProfile: 'claude' };
+  expect(sessionIdStep!.condition?.(claudeAcc)).toBe(true);
+
+  const shellAcc = { _launchProfile: 'shell' };
+  expect(sessionIdStep!.condition?.(shellAcc)).toBe(false);
 });

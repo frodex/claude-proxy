@@ -26,6 +26,7 @@ import {
   getClaudeGroups,
 } from './user-utils.js';
 import { listDeadSessions, loadSessionMeta } from './session-store.js';
+import { getProfile, resolveCommand, buildCommandArgs } from './launch-profiles.js';
 import { bufferToScreenState, PALETTE_256 } from './screen-renderer.js';
 
 export function composeTitle(session: any): string {
@@ -171,14 +172,20 @@ export class ProxyOperations {
       lastKeystroke: Date.now(),
     };
 
-    const args: string[] = [];
-    if (req.dangerousSkipPermissions) args.push('--dangerously-skip-permissions');
-    if (req.claudeSessionId && req.isResume) {
-      args.push('--resume', req.claudeSessionId);
+    const launchProfile = req.launchProfile ?? 'claude';
+    if (!getProfile(launchProfile)) {
+      throw { code: 'BAD_REQUEST', message: `Unknown launch profile: ${launchProfile}` } as OperationError;
     }
 
+    const { command } = resolveCommand(launchProfile);
+    const commandArgs = buildCommandArgs(launchProfile, {
+      isResume: req.isResume,
+      claudeSessionId: req.claudeSessionId,
+      dangerousSkipPermissions: req.dangerousSkipPermissions,
+    });
+
     const session = this.sessionManager.createSession(
-      req.name, fakeClient, req.runAsUser, 'claude', access, args, req.remoteHost, req.workingDir,
+      req.name, fakeClient, req.runAsUser, command, access, commandArgs, req.remoteHost, req.workingDir, launchProfile,
     );
 
     return this.sessionToInfo(session);
@@ -201,6 +208,7 @@ export class ProxyOperations {
       claudeSessionId: d.claudeSessionId ?? null,
       workingDir: d.workingDir ?? null,
       remoteHost: d.remoteHost ?? null,
+      launchProfile: d.launchProfile,
     }));
   }
 
@@ -277,20 +285,28 @@ export class ProxyOperations {
       lastKeystroke: Date.now(),
     };
 
-    const args: string[] = [];
-    if (deadSession.claudeSessionId) {
-      args.push('--resume', deadSession.claudeSessionId);
+    const launchProfile = deadSession.launchProfile ?? 'claude';
+    if (!getProfile(launchProfile)) {
+      throw { code: 'BAD_REQUEST', message: `Unknown launch profile: ${launchProfile}` } as OperationError;
     }
+
+    const { command } = resolveCommand(launchProfile);
+    const commandArgs = buildCommandArgs(launchProfile, {
+      isResume: true,
+      claudeSessionId: deadSession.claudeSessionId ?? undefined,
+      dangerousSkipPermissions: s.dangerousSkipPermissions,
+    });
 
     const session = this.sessionManager.createSession(
       s.name ?? deadSession.name,
       fakeClient,
       deadSession.runAsUser,
-      'claude',
+      command,
       access,
-      args,
+      commandArgs,
       deadSession.remoteHost,
       deadSession.workingDir,
+      launchProfile,
     );
 
     return this.sessionToInfo(session);
@@ -341,6 +357,7 @@ export class ProxyOperations {
       args,
       sourceSession.remoteHost,
       sourceSession.workingDir,
+      'claude',
     );
 
     return this.sessionToInfo(forkedSession);
@@ -458,6 +475,7 @@ export class ProxyOperations {
   private sessionToInfo(session: Session): SessionInfo {
     const pty = (session as any).pty;
     const dims = pty?.getScreenDimensions?.() ?? { cols: 80, rows: 24 };
+    const meta = loadSessionMeta(session.id);
     return {
       id: session.id,
       name: session.name,
@@ -468,6 +486,7 @@ export class ProxyOperations {
       owner: session.access?.owner,
       createdAt: session.createdAt.toISOString(),
       workingDir: (session as any).workingDir || null,
+      launchProfile: meta?.launchProfile,
     };
   }
 }

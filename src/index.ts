@@ -31,6 +31,7 @@ import { SQLiteUserStore } from './auth/user-store.js';
 import { SocketManager } from './ugo/socket-manager.js';
 import { GroupWatcher } from './ugo/group-watcher.js';
 import { executeCrossFork as runCrossFork, isToolAvailable as isClaudeForkAvailable } from './claude-fork-client.js';
+import { getProfile, buildCommandArgs, resolveCommand } from './launch-profiles.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -151,7 +152,10 @@ function renderSessionForm(client: Client): void {
   const summary = entry.flow.getFlowSummary();
   const state = entry.flow.getCurrentState();
   const missing = entry.flow.getMode() !== 'legacy' ? entry.flow.getMissingRequired() : [];
-  const title = entry.isFork ? 'Fork session' : entry.isResume ? 'Resume session' : 'New session';
+  const profileId = entry.flow.getResults()?._launchProfile;
+  const profile = profileId ? getProfile(profileId) : undefined;
+  const profileLabel = profile ? profile.label.replace(/^New /, '') : 'session';
+  const title = entry.isFork ? 'Fork session' : entry.isResume ? `Resume ${profileLabel}` : `New ${profileLabel}`;
 
   client.write(renderFlowForm(title, summary, state.widget, state.stepId, missing.length > 0 ? missing : undefined));
 }
@@ -160,7 +164,7 @@ function isAdmin(username: string): boolean {
   return username === 'root' || isUserInGroup(username, 'admins');
 }
 
-function startNewSessionFlow(client: Client): void {
+function startNewSessionFlow(client: Client, profileId: string = 'claude'): void {
   const steps = buildSessionFormSteps('create', client, {}, {
     getUsers: () => getClaudeUsers().filter(u => u !== client.username),
     getGroups: () => getClaudeGroups(),
@@ -191,6 +195,7 @@ function startNewSessionFlow(client: Client): void {
     _remotes: config.remotes || [],
     _availableUsers: getClaudeUsers().filter(u => u !== client.username),
     _availableGroups: getClaudeGroups(),
+    _launchProfile: profileId,
   };
 
   const flow = new FlowEngine(steps, initialState);
@@ -223,6 +228,7 @@ function startRestartWithForm(client: Client, dead: StoredSession): void {
     _isAdmin: isAdmin(client.username),
     _hasRemotes: false,
     _defaultUser: client.username,
+    _launchProfile: dead.launchProfile || 'claude',
   };
 
   const flow = new FlowEngine(steps, initialState);
@@ -284,15 +290,19 @@ function finalizeSessionFromResults(client: Client, results: Record<string, any>
   };
 
   try {
-    const commandArgs: string[] = [];
-    if (isResume) commandArgs.push('--resume');
-    if (results.dangerousSkipPermissions) commandArgs.push('--dangerously-skip-permissions');
+    const profileId = results._launchProfile || 'claude';
+    const { command } = resolveCommand(profileId);
+    const commandArgs = buildCommandArgs(profileId, {
+      isResume,
+      claudeSessionId: results.claudeSessionId,
+      dangerousSkipPermissions: results.dangerousSkipPermissions,
+    });
     const runAs = results.runAsUser || client.username;
     const remote = results.remoteHost || undefined;
     const workDir = results.workingDir || undefined;
 
-    console.log(`[create] ${client.username} creating "${results.name}" as ${runAs} on ${remote || 'local'}`);
-    const session = sessionManager.createSession(results.name, client, runAs, 'claude', access, commandArgs, remote, workDir);
+    console.log(`[create] ${client.username} creating "${results.name}" [${profileId}] as ${runAs} on ${remote || 'local'}`);
+    const session = sessionManager.createSession(results.name, client, runAs, command, access, commandArgs, remote, workDir, profileId);
 
     if (workDir) dirScanner.addToHistory(workDir);
 
@@ -356,6 +366,7 @@ function finalizeForkFromLobby(client: Client, results: Record<string, any>, sou
         forkName, client, targetUser, 'claude', access,
         ['--resume', newSessionId],  // no --fork-session
         undefined, targetWorkdir,
+        'claude',
       );
 
       const forkMeta = loadSessionMeta(forkedSession.id);
@@ -387,6 +398,7 @@ function finalizeForkFromLobby(client: Client, results: Record<string, any>, sou
       forkName, client, sourceSession.runAsUser, 'claude', access,
       ['--resume', claudeId, '--fork-session'],
       undefined, sourceSession.workingDir,
+      'claude',
     );
 
     const forkMeta = loadSessionMeta(forkedSession.id);
@@ -523,17 +535,23 @@ function handleResumeIdInput(client: Client, data: Buffer): void {
     }
 
     try {
-      const resumeArgs = sessionId ? ['--resume', sessionId] : ['--resume'];
-      console.log(`[restart] ${client.username} restarting "${dead.name}" with resume ${sessionId || '(picker)'}`);
+      const profileId = dead.launchProfile || 'claude';
+      const { command } = resolveCommand(profileId);
+      const resumeArgs = buildCommandArgs(profileId, {
+        isResume: true,
+        claudeSessionId: sessionId || dead.claudeSessionId,
+      });
+      console.log(`[restart] ${client.username} restarting "${dead.name}" [${profileId}] with resume ${sessionId || '(picker)'}`);
       const session = sessionManager.createSession(
         dead.name,
         client,
         dead.runAsUser || client.username,
-        'claude',
+        command,
         dead.access,
         resumeArgs,
         undefined,
         dead.workingDir,
+        profileId,
       );
 
       const state = clientState.get(client.id);
@@ -593,6 +611,7 @@ function launchDeepScan(client: Client): void {
     _remotes: config.remotes || [],
     _availableUsers: getClaudeUsers().filter(u => u !== client.username),
     _availableGroups: getClaudeGroups(),
+    _launchProfile: 'claude',
   };
 
   const flow = new FlowEngine(steps, initialState);
@@ -935,9 +954,13 @@ transport.onConnect((client) => {
                 joinSession(client, target.id);
               }
             }
+          } else if (result.action.startsWith('new:')) {
+            const profileId = result.action.split(':')[1];
+            console.log(`[lobby] ${client.username} starting new session flow (profile: ${profileId})`);
+            startNewSessionFlow(client, profileId);
           } else if (result.action === 'new') {
             console.log(`[lobby] ${client.username} starting new session flow`);
-            startNewSessionFlow(client);
+            startNewSessionFlow(client, 'claude');
           } else if (result.action === 'continue') {
             startResumeFlow(client);
           } else if (result.action === 'fork') {

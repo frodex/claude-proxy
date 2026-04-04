@@ -1,8 +1,8 @@
 // src/lobby.ts
 
-import { color } from './ansi.js';
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection, type MenuItem } from './interactive-menu.js';
 import type { Session } from './types.js';
+import { listProfiles } from './launch-profiles.js';
 
 interface LobbyOptions {
   motd: string;
@@ -55,9 +55,15 @@ export class Lobby {
       });
     }
 
+    const profileItems: MenuItem[] = listProfiles().map(p => ({
+      label: p.label,
+      key: p.key,
+      action: `new:${p.id}`,
+    }));
+
     sections.push({
       items: [
-        { label: 'New session', key: 'n', action: 'new' },
+        ...profileItems,
         { label: 'Restart previous session', key: 'r', action: 'continue' },
         { label: 'Fork a session', key: 'f', action: 'fork' },
         { label: 'Export sessions', key: 'e', action: 'export' },
@@ -103,6 +109,9 @@ export class Lobby {
         if (action.startsWith('join:')) {
           const idx = parseInt(action.split(':')[1]);
           return { type: 'select', action: 'join', sessionIndex: idx };
+        }
+        if (action.startsWith('new:')) {
+          return { type: 'select', action };
         }
         return { type: 'select', action };
       }

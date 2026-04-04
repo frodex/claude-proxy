@@ -9,6 +9,7 @@ import { setScrollRegion, enterAltScreen, leaveAltScreen } from './ansi.js';
 import { renderMenu, getActionAtCursor, findItemByKey, nextSelectable, type MenuSection } from './interactive-menu.js';
 import { ScrollbackViewer } from './scrollback-viewer.js';
 import { saveSessionMeta, loadSessionMeta, deleteSessionMeta, listStoredSessions, listTmuxSessionNames, discoverClaudeSessionId } from './session-store.js';
+import { getProfile } from './launch-profiles.js';
 import { canUserAccessSession, canUserEditSession, getClaudeUsers, getClaudeGroups, isUserInGroup } from './user-utils.js';
 import { parseKey } from './widgets/keys.js';
 import { renderFlowForm } from './widgets/renderers.js';
@@ -214,6 +215,7 @@ export class SessionManager extends EventEmitter {
     commandArgs: string[] = [],
     remoteHost?: string,
     workingDir?: string,
+    launchProfile?: string,
   ): Session {
     if (this.sessions.size >= this.options.maxSessions) {
       throw new Error(`Cannot create session: max sessions (${this.options.maxSessions}) reached`);
@@ -286,13 +288,16 @@ export class SessionManager extends EventEmitter {
       socketPath,
       createdAt: session.createdAt.toISOString(),
       access: sessionAccess,
+      launchProfile,
     });
 
     this.sessions.set(tmuxId, session);
     this.joinSession(tmuxId, creator);
 
-    // Backfill Claude session ID after Claude has time to start
-    this.scheduleClaudeIdBackfill(tmuxId, socketPath, user);
+    const profile = getProfile(launchProfile ?? 'claude');
+    if (profile?.capabilities.sessionIdBackfill) {
+      this.scheduleClaudeIdBackfill(tmuxId, socketPath, user);
+    }
 
     return session;
   }
@@ -796,6 +801,7 @@ export class SessionManager extends EventEmitter {
         ['--resume', claudeId, '--fork-session'],
         undefined,
         session.workingDir,
+        'claude',
       );
 
       // Store fork metadata
@@ -881,6 +887,7 @@ export class SessionManager extends EventEmitter {
         ['--resume', newSessionId],  // no --fork-session — claude-fork already copied the JSONL
         undefined,
         targetWorkdir,
+        'claude',
       );
 
       // Store fork metadata

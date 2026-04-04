@@ -22,7 +22,7 @@ fields:
       create:  { visible: true, locked: false }
       edit:    { visible: true, locked: true, prefill: true }
       restart: { visible: true, locked: true, prefill: true }
-      fork:    { visible: true, locked: true, prefill: true }
+      fork:    { visible: true, locked: false, prefill: true }  # unlocked: cross-user fork creates new process
 
   - id: server
     label: Server
@@ -107,7 +107,7 @@ fields:
     label: Skip permissions?
     widget: yesno
     default: false
-    condition: admin-only
+    condition: claude-profile-only
     modes:
       create:  { visible: true, locked: false }
       edit:    { visible: true, locked: false, prefill: true }
@@ -117,6 +117,7 @@ fields:
   - id: claudeSessionId
     label: Claude session ID
     widget: text
+    condition: has-session-id-backfill
     modes:
       create:  { visible: false }
       edit:    { visible: true, locked: false, prefill: true }

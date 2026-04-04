@@ -509,6 +509,7 @@ describe('ProxyOperations', () => {
       expect(result.id).toBe('cp-source-fork');
       const callArgs = sm.createSession.mock.calls[0];
       expect(callArgs[5]).toEqual(['--resume', 'claude-uuid-123', '--fork-session']);
+      expect(callArgs[8]).toBe('claude');
     });
   });
 

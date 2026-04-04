@@ -26,14 +26,14 @@ test('renderScreen shows sessions and commands', () => {
   const output = lobby.renderScreen({ username: 'greg', sessions, cursor: 0, cols: 80, rows: 24 });
   expect(output).toContain('bugfix');
   expect(output).toContain('feature');
-  expect(output).toContain('New session');
+  expect(output).toContain('New Claude session');
 });
 
 test('renderScreen shows empty state', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
   const output = lobby.renderScreen({ username: 'greg', sessions: [], cursor: 0, cols: 80, rows: 24 });
   expect(output).toContain('No active sessions');
-  expect(output).toContain('New session');
+  expect(output).toContain('New terminal');
 });
 
 test('arrow down navigates', () => {
@@ -55,11 +55,11 @@ test('enter selects current item', () => {
   }
 });
 
-test('n triggers new', () => {
+test('n triggers new Claude session flow', () => {
   const lobby = new Lobby({ motd: 'Welcome' });
   const result = lobby.handleInput(Buffer.from('n'), [], 0);
   expect(result.type).toBe('select');
-  if (result.type === 'select') expect(result.action).toBe('new');
+  if (result.type === 'select') expect(result.action).toBe('new:claude');
 });
 
 test('q triggers quit', () => {

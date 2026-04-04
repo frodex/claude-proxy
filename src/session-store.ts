@@ -25,6 +25,7 @@ interface StoredSession {
   forkDate?: string;              // ISO timestamp of when fork was created
   forkTool?: 'builtin' | 'claude-fork';  // which fork mechanism was used
   forkSourceProject?: string;     // original project directory (for cross-dir forks)
+  launchProfile?: string;         // profile id (shell, claude, cursor) — defaults to 'claude' for legacy sessions
 }
 
 export function ensureStoreDir(): void {

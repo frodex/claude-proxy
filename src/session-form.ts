@@ -9,6 +9,7 @@ import { ListPicker } from './widgets/list-picker.js';
 import { YesNoPrompt } from './widgets/yes-no.js';
 import { CheckboxPicker } from './widgets/checkbox-picker.js';
 import { ComboInput } from './widgets/combo-input.js';
+import { getProfile } from './launch-profiles.js';
 
 // --- YAML config types ---
 
@@ -60,6 +61,17 @@ const PREDICATES: Record<string, Predicate> = {
   'admin-with-remotes': (acc) => acc._isAdmin === true && acc._hasRemotes === true,
   'not-hidden': (acc) => !acc.hidden,
   'not-hidden-and-not-public': (acc) => !acc.hidden && !acc.public,
+  'claude-profile-only': (acc) => {
+    if (acc._isAdmin !== true) return false;
+    const profileId = acc._launchProfile || 'claude';
+    const profile = getProfile(profileId);
+    return profile?.capabilities.dangerMode === true;
+  },
+  'has-session-id-backfill': (acc) => {
+    const profileId = acc._launchProfile || 'claude';
+    const profile = getProfile(profileId);
+    return profile?.capabilities.sessionIdBackfill === true;
+  },
 };
 
 export function getConditionPredicate(name?: string): Predicate | undefined {
