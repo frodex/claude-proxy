@@ -70,7 +70,7 @@ test('renderFlowForm shows all steps with correct state indicators', () => {
   expect(output).toContain('\u2713');          // checkmark for completed
   expect(output).toContain('>');               // cursor on active/editing
   expect(output).toContain('---');             // grayed placeholder
-  expect(output).toContain('\uD83D\uDD12');    // lock emoji for locked
+  expect(output).toContain('[LOCKED]');          // locked field indicator
 });
 
 test('renderFlowForm highlights missing required fields in red', () => {

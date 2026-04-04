@@ -1,5 +1,21 @@
 # Unified Session Screen Implementation Plan
 
+> **Status: APPROVED (2026-04-01)** — Plan reviewed by implementing agent, questions sent to authoring agent, replies received, user resolved all open concerns. Ready for rewrite + execution.
+>
+> **Review artifacts:**
+> - Questions: `2026-03-31-unified-session-screen-QUESTIONS.md`
+> - Replies: `2026-03-31-unified-session-screen-QUESTIONS-REPLY-AGENT.md`
+> - Concerns + resolutions: `2026-03-31-unified-session-screen-CONCERNS.md`
+> - Decision journal: `docs/research/2026-04-01-v0.1-unified-session-screen-decisions-journal.md`
+> - YAML impact report: `2026-03-31-yaml-form-config-impact.md`
+>
+> **Decisions that modify this plan (baked into rewrite):**
+> 1. Two-mode form interaction: yellow=field nav (arrows), white=widget edit (Enter toggles)
+> 2. displayValue callback on FlowStep (not _display_ keys)
+> 3. runas/server/workdir locked on edit/restart/fork
+> 4. YAML-driven field × mode config (new task)
+> 5. Validation + submit gate + RED flagging on required fields
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One screen for creating, editing, restarting, and forking sessions. Full-form rendering with widget states (active/completed/locked/grayed/pending). All SSH features get corresponding API endpoints.
