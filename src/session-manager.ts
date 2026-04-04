@@ -247,6 +247,7 @@ export class SessionManager extends EventEmitter {
       rows: creator.termSize.rows,
       scrollbackBytes: this.options.scrollbackBytes,
       tmuxSessionId: tmuxId,
+      launchProfile,
       runAsUser: user,
       remoteHost,
       workingDir,

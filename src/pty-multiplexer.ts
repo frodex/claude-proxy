@@ -24,6 +24,8 @@ interface PtyOptions {
   rows: number;
   scrollbackBytes: number;
   tmuxSessionId: string;
+  /** shell | claude | cursor — drives remote installer vs generic runner (do not rely on command string alone). */
+  launchProfile?: string;
   runAsUser?: string;
   remoteHost?: string;
   workingDir?: string;
@@ -79,18 +81,31 @@ export class PtyMultiplexer {
 
     const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude.sh');
 
+    // Remote: Claude installer only when profile is claude (or legacy: no profile + command claude).
+    // Do not use `command === 'claude'` alone — must match launch profile so shell/cursor never hit the installer.
+    const useClaudeRemoteInstaller =
+      !!this.remoteHost &&
+      (options.launchProfile === 'claude' ||
+        (options.launchProfile == null && options.command === 'claude'));
+
     // Build the command to run inside tmux (local sessions only — set below)
     let innerCommand: string;
 
-    if (this.remoteHost && options.command !== 'claude') {
+    if (this.remoteHost && !useClaudeRemoteInstaller) {
       // Remote shell / Cursor / etc. — must NOT use launch-claude-remote.sh (that forwards args to `claude`)
       const remoteScript = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
+      // Remote shell: omit bash `-l` — on some LXC/minimal setups it surfaces as "unknown option '-l'"
+      // (or was passed through to `claude` when the wrong remote path ran). Plain bash is enough here.
+      let remoteArgs = [...options.args];
+      if (options.launchProfile === 'shell') {
+        remoteArgs = remoteArgs.filter(a => a !== '-l');
+      }
+      const remoteCmdLine = [options.command, ...remoteArgs].join(' ');
       let innerGeneric: string;
       if (options.runAsUser) {
-        const fullCmd = [options.command, ...options.args].join(' ');
-        innerGeneric = `su - ${options.runAsUser} -c '${cdPrefix}${fullCmd}'`;
+        innerGeneric = `su - ${options.runAsUser} -c '${cdPrefix}${remoteCmdLine}'`;
       } else {
-        innerGeneric = `${cdPrefix}${[options.command, ...options.args].join(' ')}`;
+        innerGeneric = `${cdPrefix}${remoteCmdLine}`;
       }
       const localStaging = `/tmp/claude-proxy-generic-remote-${this.tmuxId}.sh`;
       writeFileSync(
@@ -107,7 +122,9 @@ export class PtyMultiplexer {
           `ssh ${this.remoteHost} "tmux new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${remoteScript}"`,
           { stdio: 'pipe' },
         );
-        console.log(`[tmux] created remote session ${this.tmuxId} on ${this.remoteHost} (${options.command})`);
+        console.log(
+          `[tmux] created remote session ${this.tmuxId} on ${this.remoteHost} (profile=${options.launchProfile ?? 'legacy'} cmd=${options.command})`,
+        );
       } catch (err: any) {
         try {
           unlinkSync(localStaging);
@@ -115,7 +132,7 @@ export class PtyMultiplexer {
         console.error(`[tmux] failed to create remote session: ${err.message}`);
         throw err;
       }
-    } else if (this.remoteHost && options.command === 'claude') {
+    } else if (this.remoteHost && useClaudeRemoteInstaller) {
       // Remote Claude — scp launcher + wrapper scripts, then run in tmux
       const remoteScript = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
       const remoteLauncher = `/tmp/claude-proxy-launcher-${this.tmuxId}.sh`;
