@@ -59,6 +59,7 @@ Edit this section as you finish items.
 | Typing / user id browser → CP | `/srv/svg-terminal/docs/PRD-amendment-005.md` |
 | Partial screen + client index | `/srv/svg-terminal/docs/integration/2026-04-02-claude-proxy-partial-screen-fix.v01.md` |
 | Unix socket API + svg-terminal systemd (Phase C) | `/srv/svg-terminal/docs/PRD-amendment-006.md` — journal: `docs/research/2026-04-03-v0.1-phase-c-socket-systemd-journal.md` (this repo) |
+| Phase D — OAuth PKCE, CSRF, encrypted cookie, login UX | `docs/superpowers/plans/2026-04-04-phase-d-oauth-browser-hardening.md` — prerequisite: `docs/superpowers/specs/2026-04-03-oauth-web-api-wiring-spec.md` |
 
 ---
 
