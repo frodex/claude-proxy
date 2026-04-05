@@ -1073,7 +1073,7 @@ export class SessionManager extends EventEmitter {
         const groups = this.provisioner.getGroups(username);
         const sessionGroup = `sess-${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
         if (session.access.public) {
-          return groups.includes('cp-users');
+          return groups.includes('users');  // getGroups strips cp- prefix
         }
         return groups.includes(sessionGroup) ||
                session.access.allowedGroups.some(g => groups.includes(g));
