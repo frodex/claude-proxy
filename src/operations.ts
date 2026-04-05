@@ -25,7 +25,7 @@ import {
   getClaudeUsers,
   getClaudeGroups,
 } from './user-utils.js';
-import { listDeadSessions, loadSessionMeta } from './session-store.js';
+import { listDeadSessions, loadSessionMeta, deleteSessionMeta } from './session-store.js';
 import { getProfile, resolveCommand, buildCommandArgs } from './launch-profiles.js';
 import { bufferToScreenState, PALETTE_256 } from './screen-renderer.js';
 
@@ -308,6 +308,11 @@ export class ProxyOperations {
       deadSession.workingDir,
       launchProfile,
     );
+
+    // Same sanitized name reuses tmux id — createSession already overwrote the JSON.
+    if (session.id !== id) {
+      deleteSessionMeta(id);
+    }
 
     return this.sessionToInfo(session);
   }

@@ -34,13 +34,13 @@ describe('launch-profiles', () => {
 
   test('resolveCommand for cursor profile', () => {
     const { command, useLauncher } = resolveCommand('cursor');
-    expect(command).toBe('cursor');
+    expect(command).toBe('cursor-agent');
     expect(useLauncher).toBe(false);
   });
 
   test('buildCommandArgs for shell — no special args', () => {
     const args = buildCommandArgs('shell', { dangerousSkipPermissions: true });
-    expect(args).toEqual(['-l']);
+    expect(args).toEqual([]);
   });
 
   test('buildCommandArgs for claude with resume', () => {

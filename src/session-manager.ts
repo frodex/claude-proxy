@@ -173,7 +173,7 @@ export class SessionManager extends EventEmitter {
         socketPath: meta?.socketPath,
         onExit: (code) => {
           console.log(`[session-exit] "${name}" (${id}) exited with code ${code}`);
-          deleteSessionMeta(id);
+          // Keep JSON metadata so listDeadSessions() can offer restart (tmux gone, meta remains).
           this.sessions.delete(id);
           this.emit('session-end', id);
         },
@@ -254,7 +254,7 @@ export class SessionManager extends EventEmitter {
       socketPath,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
-        deleteSessionMeta(tmuxId);
+        // Keep JSON metadata so listDeadSessions() can offer restart (tmux gone, meta remains).
         this.sessions.delete(tmuxId);
         this.emit('session-end', tmuxId);
       },
@@ -1109,6 +1109,7 @@ export class SessionManager extends EventEmitter {
     }
     session.pty.destroy();
     this.sessions.delete(sessionId);
+    deleteSessionMeta(sessionId);
   }
 
   /**

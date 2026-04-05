@@ -27,6 +27,12 @@ const SPECIAL_KEYS: Record<string, string> = {
   F9: '\x1b[20~', F10: '\x1b[21~', F11: '\x1b[23~', F12: '\x1b[24~',
 };
 
+// DECCKM: cursor keys that change from CSI to SS3 in application mode
+const DECCKM_KEYS: Record<string, string> = {
+  Up: '\x1bOA', Down: '\x1bOB', Right: '\x1bOC', Left: '\x1bOD',
+  Home: '\x1bOH', End: '\x1bOF',
+};
+
 export interface SocketServerOptions {
   socketPath: string;
   socketMode?: number;
@@ -49,6 +55,8 @@ class TerminalMirror {
   private dirtyLines = new Set<number>();
   private dirty = false;
   private title: string;
+  private lastCols = 0;
+  private lastRows = 0;
 
   constructor(
     _sessionId: string,
@@ -64,6 +72,8 @@ class TerminalMirror {
     if (!pty) return;
 
     const dims = pty.getScreenDimensions();
+    this.lastCols = dims.cols;
+    this.lastRows = dims.rows;
     this.title = composeTitle(session);
     const initial = pty.getInitialScreen();
 
@@ -75,11 +85,15 @@ class TerminalMirror {
         const raw = textLines[i] || '';
         lines.push({ spans: raw ? parseAnsiLine(raw) : [] });
       }
+      const inputModes = pty.getInputModes();
       fullState = {
         type: 'screen' as const,
         width: dims.cols,
         height: dims.rows,
         cursor: { x: 0, y: 0 },
+        mouseMode: pty.getMouseMode(),
+        bracketedPasteMode: inputModes.bracketedPaste,
+        sendFocusMode: inputModes.sendFocus,
         title: this.title,
         lines,
       };
@@ -106,9 +120,30 @@ class TerminalMirror {
     });
 
     this.pollTimer = setInterval(() => {
+      const dims = pty.getScreenDimensions();
+      const dimsChanged = dims.cols !== this.lastCols || dims.rows !== this.lastRows;
+
+      if (dimsChanged) {
+        this.lastCols = dims.cols;
+        this.lastRows = dims.rows;
+        this.title = composeTitle(session);
+        const buffer = pty.getBuffer();
+        const inputModes = pty.getInputModes();
+        const fullState = {
+          type: 'screen' as const,
+          ...bufferToScreenState(buffer, dims.cols, dims.rows, this.title),
+          mouseMode: pty.getMouseMode(),
+          bracketedPasteMode: inputModes.bracketedPaste,
+          sendFocusMode: inputModes.sendFocus,
+        };
+        this.emit(fullState);
+        this.dirtyLines.clear();
+        this.dirty = false;
+        return;
+      }
+
       if (!this.dirty) return;
 
-      const dims = pty.getScreenDimensions();
       const changed: Record<string, { spans: unknown[] }> = {};
 
       for (const lineIdx of this.dirtyLines) {
@@ -119,9 +154,13 @@ class TerminalMirror {
 
       this.title = composeTitle(session);
 
+      const inputModes = pty.getInputModes();
       const delta: Record<string, unknown> = {
         type: 'delta',
         cursor: { x: dims.cursorX, y: dims.cursorY },
+        mouseMode: pty.getMouseMode(),
+        bracketedPasteMode: inputModes.bracketedPaste,
+        sendFocusMode: inputModes.sendFocus,
         title: this.title,
       };
       if (Object.keys(changed).length > 0) delta.changed = changed;
@@ -410,16 +449,15 @@ export class SocketServer {
         const buffer = session.pty.getBuffer();
         const dims = session.pty.getScreenDimensions();
         const title = composeTitle(session);
-        const fullState = bufferToScreenState(buffer, dims.cols, dims.rows, title);
-        try {
-          client.socket.write(
-            serializeMessage({
-              event: 'terminal',
-              sessionId,
-              data: { type: 'screen', ...fullState },
-            }),
-          );
-        } catch { /* closed */ }
+        const inputModes = session.pty.getInputModes();
+        const fullState = {
+          type: 'screen' as const,
+          ...bufferToScreenState(buffer, dims.cols, dims.rows, title),
+          mouseMode: session.pty.getMouseMode(),
+          bracketedPasteMode: inputModes.bracketedPaste,
+          sendFocusMode: inputModes.sendFocus,
+        };
+        this.broadcastSessionEvent(sessionId, 'terminal', fullState);
       }, 50);
     }
   }
@@ -485,6 +523,9 @@ export class SocketServer {
             width: dims.cols,
             height: dims.rows,
             cursor: offset > 0 ? { x: 0, y: 0 } : { x: dims.cursorX, y: dims.cursorY },
+            mouseMode: session.pty.getMouseMode(),
+            bracketedPasteMode: session.pty.getInputModes().bracketedPaste,
+            sendFocusMode: session.pty.getInputModes().sendFocus,
             title,
             scrollOffset: offset,
             maxScrollback,
@@ -507,7 +548,9 @@ export class SocketServer {
     const msg = body as Record<string, unknown>;
     let bytes = '';
     if (msg?.specialKey) {
-      bytes = SPECIAL_KEYS[msg.specialKey as string] || '';
+      const key = msg.specialKey as string;
+      const modes = session.pty.getInputModes();
+      bytes = (modes.applicationCursorKeys && DECCKM_KEYS[key]) || SPECIAL_KEYS[key] || '';
     } else if (msg?.keys) {
       bytes = String(msg.keys);
       if (msg.ctrl && bytes.length === 1) {
@@ -516,6 +559,9 @@ export class SocketServer {
         bytes = '\x1b' + bytes;
       }
     }
-    if (bytes) session.pty.write(Buffer.from(bytes));
+    if (bytes) {
+      const repeat = Math.min(Math.max(Number(msg?.repeat) || 1, 1), 200);
+      session.pty.write(Buffer.from(bytes.repeat(repeat)));
+    }
   }
 }

@@ -1,12 +1,15 @@
 // src/pty-multiplexer.ts
 
 import { spawn, type IPty } from 'node-pty';
-import { execSync, execFile } from 'child_process';
+import { execSync, execFileSync, execFile } from 'child_process';
 import { resolve } from 'path';
 import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import xtermHeadless from '@xterm/headless';
 const { Terminal } = xtermHeadless;
 import type { Client } from './types.js';
+
+/** Must match `tmux -f` used for new-session / attach on the default socket. */
+const TMUX_CONF_PATH = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
 
 function execFileAsync(cmd: string, args: string[], options: { encoding: 'utf-8'; timeout: number }): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -186,12 +189,12 @@ export class PtyMultiplexer {
           const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
           innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${launcherPath}${argsStr}'`;
         } else {
-          let commandPath = options.command;
-          try {
-            commandPath = execSync(`which ${options.command}`, { encoding: 'utf-8' }).trim();
-          } catch {}
-          const fullCmd = [commandPath, ...options.args].join(' ');
-          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${fullCmd}'`;
+          // Run via login shell so PATH matches the target user (e.g. ~/.local/bin/cursor-agent).
+          // Resolving with the proxy's `which` and baking /root/.local/bin/... breaks non-root runAsUser
+          // and can miss cursor-agent if the service PATH differs from the user's login PATH.
+          const innerForBash = ['exec', options.command, ...options.args].join(' ');
+          const line = `${cdPrefix}bash -lc ${JSON.stringify(innerForBash)}`;
+          innerCommand = `su - ${options.runAsUser} -c ${JSON.stringify(line)}`;
         }
       } else if (options.command === 'claude') {
         innerCommand = `${cdPrefix}${launcherPath}`;
@@ -202,10 +205,9 @@ export class PtyMultiplexer {
       const scriptPath = `/tmp/claude-proxy-launch-${this.tmuxId}.sh`;
       writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\n${innerCommand}\n`, { mode: 0o755 });
 
-      const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
       const tmuxCmd = this.socketPath
         ? `tmux -S ${this.socketPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`
-        : `tmux -f ${confPath} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
+        : `tmux -f ${TMUX_CONF_PATH} new-session -d -s ${this.tmuxId} -x ${options.cols} -y ${options.rows} ${scriptPath}`;
       try {
         execSync(tmuxCmd, { stdio: 'pipe' });
         console.log(`[tmux] created session ${this.tmuxId}`);
@@ -272,8 +274,7 @@ export class PtyMultiplexer {
       });
     } else {
       // Local — attach via default server
-      const confPath = resolve(import.meta.dirname ?? '.', '..', 'tmux.conf');
-      this.pty = spawn('tmux', ['-f', confPath, 'attach-session', '-t', this.tmuxId], {
+      this.pty = spawn('tmux', ['-f', TMUX_CONF_PATH, 'attach-session', '-t', this.tmuxId], {
         name: 'xterm-256color',
         cols,
         rows,
@@ -314,14 +315,19 @@ export class PtyMultiplexer {
     });
   }
 
+  /** Local tmux argv prefix: same server as new-session / attach (-S socket or -f config). */
+  private tmuxLocalCliPrefix(): string[] {
+    if (this.socketPath) return ['-S', this.socketPath];
+    return ['-f', TMUX_CONF_PATH];
+  }
+
   private isTmuxSessionAlive(): boolean {
     try {
-      const cmd = this.remoteHost
-        ? `ssh ${this.remoteHost} tmux has-session -t ${this.tmuxId}`
-        : this.socketPath
-          ? `tmux -S ${this.socketPath} has-session -t ${this.tmuxId}`
-          : `tmux has-session -t ${this.tmuxId}`;
-      execSync(cmd, { stdio: 'pipe' });
+      if (this.remoteHost) {
+        execSync(`ssh ${this.remoteHost} tmux has-session -t ${this.tmuxId}`, { stdio: 'pipe' });
+        return true;
+      }
+      execFileSync('tmux', [...this.tmuxLocalCliPrefix(), 'has-session', '-t', this.tmuxId], { stdio: 'pipe' });
       return true;
     } catch {
       return false;
@@ -346,6 +352,24 @@ export class PtyMultiplexer {
   }
 
   resize(cols: number, rows: number): void {
+    // Resize the tmux window FIRST so the inner application gets SIGWINCH.
+    // Without this, tmux just fills the gap with its fill character (dots/lines)
+    // and the application never redraws at the new dimensions.
+    try {
+      if (this.remoteHost) {
+        execSync(
+          `ssh ${this.remoteHost} tmux resize-window -t ${this.tmuxId} -x ${cols} -y ${rows}`,
+          { stdio: 'pipe', timeout: 3000 },
+        );
+      } else {
+        execFileSync(
+          'tmux',
+          [...this.tmuxLocalCliPrefix(), 'resize-window', '-t', this.tmuxId, '-x', String(cols), '-y', String(rows)],
+          { stdio: 'pipe', timeout: 3000 },
+        );
+      }
+    } catch { /* session may not exist yet */ }
+
     if (this.pty) {
       this.pty.resize(cols, rows);
     }
@@ -364,12 +388,11 @@ export class PtyMultiplexer {
     this.clients.clear();
     // Kill the tmux session
     try {
-      const cmd = this.remoteHost
-        ? `ssh ${this.remoteHost} tmux kill-session -t ${this.tmuxId}`
-        : this.socketPath
-          ? `tmux -S ${this.socketPath} kill-session -t ${this.tmuxId}`
-          : `tmux kill-session -t ${this.tmuxId}`;
-      execSync(cmd, { stdio: 'pipe' });
+      if (this.remoteHost) {
+        execSync(`ssh ${this.remoteHost} tmux kill-session -t ${this.tmuxId}`, { stdio: 'pipe' });
+      } else {
+        execFileSync('tmux', [...this.tmuxLocalCliPrefix(), 'kill-session', '-t', this.tmuxId], { stdio: 'pipe' });
+      }
       console.log(`[tmux] killed session ${this.tmuxId}`);
     } catch {}
   }
@@ -410,6 +433,28 @@ export class PtyMultiplexer {
    */
   getScreenLine(lineIndex: number): any | undefined {
     return this.vterm.buffer.active.getLine(lineIndex);
+  }
+
+  /**
+   * Current mouse tracking mode requested by the running application.
+   * 'none' means the app hasn't enabled mouse reporting.
+   */
+  getMouseMode(): 'none' | 'x10' | 'vt200' | 'drag' | 'any' {
+    return this.vterm.modes.mouseTrackingMode;
+  }
+
+  /** Terminal modes relevant to input handling. */
+  getInputModes(): {
+    applicationCursorKeys: boolean;
+    bracketedPaste: boolean;
+    sendFocus: boolean;
+  } {
+    const m = this.vterm.modes;
+    return {
+      applicationCursorKeys: m.applicationCursorKeysMode,
+      bracketedPaste: m.bracketedPasteMode,
+      sendFocus: m.sendFocusMode,
+    };
   }
 
   /**
@@ -456,16 +501,18 @@ export class PtyMultiplexer {
    */
   async warmCache(): Promise<void> {
     try {
-      const args = this.socketPath
-        ? ['-S', this.socketPath, 'capture-pane', '-p', '-e', '-t', this.tmuxId]
-        : ['capture-pane', '-p', '-e', '-t', this.tmuxId];
-
       if (this.remoteHost) {
-        // Remote: ssh host tmux capture-pane -p -t id
+        const args = this.socketPath
+          ? ['-S', this.socketPath, 'capture-pane', '-p', '-e', '-t', this.tmuxId]
+          : ['capture-pane', '-p', '-e', '-t', this.tmuxId];
         const stdout = await execFileAsync('ssh', [this.remoteHost, 'tmux', ...args], { encoding: 'utf-8', timeout: 5000 });
         this.screenCache = stdout;
       } else {
-        const stdout = await execFileAsync('tmux', args, { encoding: 'utf-8', timeout: 2000 });
+        const stdout = await execFileAsync(
+          'tmux',
+          [...this.tmuxLocalCliPrefix(), 'capture-pane', '-p', '-e', '-t', this.tmuxId],
+          { encoding: 'utf-8', timeout: 2000 },
+        );
         this.screenCache = stdout;
       }
       this.screenCacheReady = true;
@@ -513,10 +560,17 @@ export class PtyMultiplexer {
 
   getHistorySize(): number {
     try {
-      const prefix = this.socketPath ? `tmux -S ${this.socketPath}` : 'tmux';
-      const output = execSync(
-        `${prefix} display-message -t ${this.tmuxId} -p '#{history_size}'`,
-        { encoding: 'utf-8', timeout: 2000 }
+      if (this.remoteHost) {
+        const output = execSync(
+          `ssh ${this.remoteHost} tmux display-message -t ${this.tmuxId} -p '#{history_size}'`,
+          { encoding: 'utf-8', timeout: 2000 },
+        ).trim();
+        return parseInt(output) || 0;
+      }
+      const output = execFileSync(
+        'tmux',
+        [...this.tmuxLocalCliPrefix(), 'display-message', '-t', this.tmuxId, '-p', '#{history_size}'],
+        { encoding: 'utf-8', timeout: 2000 },
       ).trim();
       return parseInt(output) || 0;
     } catch {
@@ -566,9 +620,11 @@ export class PtyMultiplexer {
    */
   static listTmuxSessions(): Array<{ tmuxId: string; name: string; created: Date }> {
     try {
-      const output = execSync(
-        "tmux list-sessions -F '#{session_name}|#{session_created}' 2>/dev/null",
-        { encoding: 'utf-8' }
+      // Use execFileSync — a shell string breaks: `#` in #{...} can be parsed as a comment and drop the format.
+      const output = execFileSync(
+        'tmux',
+        ['-f', TMUX_CONF_PATH, 'list-sessions', '-F', '#{session_name}|#{session_created}'],
+        { encoding: 'utf-8' },
       ).trim();
 
       if (!output) return [];

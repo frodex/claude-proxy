@@ -24,7 +24,8 @@ const PROFILES: LaunchProfile[] = [
     label: 'New terminal',
     key: 't',
     command: '/bin/bash',
-    defaultArgs: ['-l'],
+    // Interactive non-login shell — avoids `bash -l` exiting immediately via `su -c` on minimal/LXC (remote path omits -l for the same reason).
+    defaultArgs: [],
     useLauncher: false,
     capabilities: { fork: false, resume: false, sessionIdBackfill: false, dangerMode: false, remoteSupport: false },
   },
@@ -41,7 +42,7 @@ const PROFILES: LaunchProfile[] = [
     id: 'cursor',
     label: 'New Cursor session',
     key: 'c',
-    command: 'cursor',
+    command: 'cursor-agent',
     defaultArgs: [],
     useLauncher: false,
     capabilities: { fork: false, resume: false, sessionIdBackfill: false, dangerMode: false, remoteSupport: false },
