@@ -14,7 +14,7 @@ import type { ProxyOperations } from './operations.js';
 import { composeTitle, parseAnsiLine } from './operations.js';
 import { lineToSpans, bufferToScreenState } from './screen-renderer.js';
 import type { SessionManager } from './session-manager.js';
-import { canUserAccessSession } from './user-utils.js';
+import { canUserAccessSession, canUserEditSession } from './user-utils.js';
 import type { CreateSessionRequest } from './operation-types.js';
 
 const SPECIAL_KEYS: Record<string, string> = {
@@ -441,6 +441,11 @@ export class SocketServer {
     if (!canUserAccessSession(username, session.access)) {
       throw { code: 'FORBIDDEN', message: 'Permission denied' };
     }
+    if (session.access.viewOnly && !canUserEditSession(username, session.access)) {
+      if (!session.access.viewOnlyAllowResize) {
+        throw { code: 'FORBIDDEN', message: 'Session is view-only (resize disabled)' };
+      }
+    }
     const cols = parseInt(String(colsRaw), 10);
     const rows = parseInt(String(rowsRaw), 10);
     if (cols > 0 && rows > 0 && cols <= 500 && rows <= 200) {
@@ -474,6 +479,11 @@ export class SocketServer {
     }
     if (!canUserAccessSession(username, session.access)) {
       throw { code: 'FORBIDDEN', message: 'Permission denied' };
+    }
+    if (session.access.viewOnly && !canUserEditSession(username, session.access)) {
+      if (!session.access.viewOnlyAllowScroll) {
+        throw { code: 'FORBIDDEN', message: 'Session is view-only (scroll disabled)' };
+      }
     }
     const offset = parseInt(String(offsetRaw), 10) || 0;
     const dims = session.pty.getScreenDimensions();
@@ -543,6 +553,10 @@ export class SocketServer {
     }
     if (!canUserAccessSession(username, session.access)) {
       throw { code: 'FORBIDDEN', message: 'Permission denied' };
+    }
+    // viewOnly: only owner/admins can send input
+    if (session.access.viewOnly && !canUserEditSession(username, session.access)) {
+      throw { code: 'FORBIDDEN', message: 'Session is view-only' };
     }
 
     const msg = body as Record<string, unknown>;

@@ -60,6 +60,8 @@ export interface SessionAccess {
   allowedGroups: string[];    // cp- group names without prefix (when not public)
   passwordHash: string | null; // hash, null = no password
   viewOnly: boolean;           // only owner can type, others watch
+  viewOnlyAllowScroll: boolean; // allow non-owners to scroll in viewOnly mode (default: true)
+  viewOnlyAllowResize: boolean; // allow non-owners to resize in viewOnly mode (default: true)
   admins: string[];            // per-session admins who can edit settings
 }
 

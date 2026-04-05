@@ -42,7 +42,12 @@ export function loadSessionMeta(tmuxId: string): StoredSession | null {
   const path = join(STORE_DIR, `${tmuxId}.json`);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
+    const meta = JSON.parse(readFileSync(path, 'utf-8'));
+    if (meta.access) {
+      if (meta.access.viewOnlyAllowScroll === undefined) meta.access.viewOnlyAllowScroll = true;
+      if (meta.access.viewOnlyAllowResize === undefined) meta.access.viewOnlyAllowResize = true;
+    }
+    return meta;
   } catch {
     return null;
   }

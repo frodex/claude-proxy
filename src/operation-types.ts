@@ -9,6 +9,8 @@ export interface CreateSessionRequest {
   remoteHost?: string;
   hidden?: boolean;
   viewOnly?: boolean;
+  viewOnlyAllowScroll?: boolean;
+  viewOnlyAllowResize?: boolean;
   public?: boolean;
   allowedUsers?: string[];
   allowedGroups?: string[];
@@ -29,6 +31,7 @@ export interface SessionInfo {
   createdAt: string;
   workingDir: string | null;
   launchProfile?: string;
+  access?: SessionAccess;
 }
 
 export interface DeadSessionInfo {

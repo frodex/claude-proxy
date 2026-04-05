@@ -161,6 +161,8 @@ export class SessionManager extends EventEmitter {
         allowedGroups: [],
         passwordHash: null,
         viewOnly: false,
+        viewOnlyAllowScroll: true,
+        viewOnlyAllowResize: true,
         admins: [],
       };
 
@@ -234,6 +236,8 @@ export class SessionManager extends EventEmitter {
       allowedGroups: access?.allowedGroups ?? [],
       passwordHash: access?.passwordHash ?? null,
       viewOnly: access?.viewOnly ?? false,
+      viewOnlyAllowScroll: access?.viewOnlyAllowScroll ?? true,
+      viewOnlyAllowResize: access?.viewOnlyAllowResize ?? true,
       admins: access?.admins ?? [],
     };
 

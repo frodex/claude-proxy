@@ -157,6 +157,8 @@ export class ProxyOperations {
     const access: Partial<SessionAccess> = {
       hidden: req.hidden ?? false,
       viewOnly: req.viewOnly ?? false,
+      viewOnlyAllowScroll: req.viewOnlyAllowScroll ?? true,
+      viewOnlyAllowResize: req.viewOnlyAllowResize ?? true,
       public: req.public ?? true,
       allowedUsers: req.allowedUsers ?? [],
       allowedGroups: req.allowedGroups ?? [],
@@ -257,6 +259,8 @@ export class ProxyOperations {
     if (updates.allowedUsers !== undefined) session.access.allowedUsers = updates.allowedUsers;
     if (updates.allowedGroups !== undefined) session.access.allowedGroups = updates.allowedGroups;
     if (updates.password !== undefined) session.access.passwordHash = updates.password;
+    if (updates.viewOnlyAllowScroll !== undefined) session.access.viewOnlyAllowScroll = updates.viewOnlyAllowScroll;
+    if (updates.viewOnlyAllowResize !== undefined) session.access.viewOnlyAllowResize = updates.viewOnlyAllowResize;
   }
 
   restartSession(id: string, username: string, settings?: Record<string, any>): SessionInfo {
@@ -492,6 +496,18 @@ export class ProxyOperations {
       createdAt: session.createdAt.toISOString(),
       workingDir: (session as any).workingDir || null,
       launchProfile: meta?.launchProfile,
+      access: {
+        owner: session.access.owner,
+        hidden: session.access.hidden,
+        public: session.access.public,
+        viewOnly: session.access.viewOnly,
+        viewOnlyAllowScroll: session.access.viewOnlyAllowScroll ?? true,
+        viewOnlyAllowResize: session.access.viewOnlyAllowResize ?? true,
+        allowedUsers: session.access.allowedUsers,
+        allowedGroups: session.access.allowedGroups,
+        admins: session.access.admins || [],
+        passwordHash: null, // Do NOT expose passwordHash
+      },
     };
   }
 }
