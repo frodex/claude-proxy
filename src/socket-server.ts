@@ -49,6 +49,8 @@ interface ConnectedClient {
   buffer: string;
   /** Per-session streaming (PTY mirror) */
   terminalSubs: Map<string, { stop(): void }>;
+  /** Web viewer keys for composeTitle tracking — sessionId → viewerKey */
+  _viewerKeys?: Map<string, string>;
 }
 
 /** Mirrors api-server WebSocket StreamClient for one session */
@@ -437,6 +439,15 @@ export class SocketServer {
   private cleanupClient(client: ConnectedClient): void {
     for (const m of client.terminalSubs.values()) m.stop();
     client.terminalSubs.clear();
+    // Remove web viewer tracking from all subscribed sessions
+    const viewerKeys = (client as any)._viewerKeys as Map<string, string> | undefined;
+    if (viewerKeys) {
+      for (const [sessionId, viewerKey] of viewerKeys) {
+        const session = this.options.sessionManager.getSession(sessionId) as any;
+        if (session?._webViewers) session._webViewers.delete(viewerKey);
+      }
+      viewerKeys.clear();
+    }
     client.subscriptions.clear();
     this.clients.delete(client);
   }
@@ -543,6 +554,15 @@ export class SocketServer {
           client.subscriptions.add(sessionId);
 
           const session = sessionManager.getSession(sessionId) as any;
+          if (session) {
+            // Track web viewer for composeTitle — keyed by client socket
+            if (!session._webViewers) session._webViewers = new Map();
+            const viewerKey = `ws-${client.socket.remoteAddress || 'unknown'}-${Date.now()}`;
+            session._webViewers.set(viewerKey, user.replace(/^cp-/, ''));
+            // Store key on client for cleanup on unsubscribe/disconnect
+            if (!client._viewerKeys) (client as any)._viewerKeys = new Map();
+            (client as any)._viewerKeys.set(sessionId, viewerKey);
+          }
           if (session?.pty) {
             const mirror = new TerminalMirrorDebounce(sessionId, session, (data) => {
               try {
@@ -565,6 +585,13 @@ export class SocketServer {
           if (m) {
             m.stop();
             client.terminalSubs.delete(sessionId);
+          }
+          // Remove web viewer tracking
+          const viewerKey = (client as any)._viewerKeys?.get(sessionId);
+          if (viewerKey) {
+            const session = sessionManager.getSession(sessionId) as any;
+            if (session?._webViewers) session._webViewers.delete(viewerKey);
+            (client as any)._viewerKeys.delete(sessionId);
           }
           respond({ unsubscribed: sessionId });
           break;

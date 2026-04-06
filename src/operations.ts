@@ -31,10 +31,18 @@ import { getProfile, resolveCommand, buildCommandArgs } from './launch-profiles.
 import { bufferToScreenState, PALETTE_256 } from './screen-renderer.js';
 
 export function composeTitle(session: any): string {
-  const users = Array.from(session.clients.values()).map((c: any) => {
+  // SSH/direct PTY clients
+  const sshUsers = Array.from(session.clients.values()).map((c: any) => {
     const prefix = c.id === session.sizeOwner ? '*' : '';
     return `${prefix}${c.username}`;
   });
+
+  // Web dashboard viewers (tracked by subscribe/unsubscribe)
+  const webViewers: string[] = session._webViewers
+    ? Array.from(new Set(session._webViewers.values() as Iterable<string>))
+    : [];
+
+  const allUsers = [...sshUsers, ...webViewers.map((u: string) => `${u}`)];
 
   const ms = Date.now() - new Date(session.createdAt).getTime();
   const seconds = Math.floor(ms / 1000);
@@ -47,7 +55,7 @@ export function composeTitle(session: any): string {
     uptime = `${h}h${m > 0 ? m + 'm' : ''}`;
   }
 
-  const userStr = users.length > 0 ? users.join(', ') : 'no users';
+  const userStr = allUsers.length > 0 ? allUsers.join(', ') : 'no users';
   return `${session.name} | ${userStr} | ${uptime}`;
 }
 
