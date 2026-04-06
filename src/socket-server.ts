@@ -48,7 +48,7 @@ interface ConnectedClient {
   subscriptions: Set<string>;
   buffer: string;
   /** Per-session streaming (PTY mirror) */
-  terminalSubs: Map<string, TerminalMirror>;
+  terminalSubs: Map<string, { stop(): void }>;
 }
 
 /** Mirrors api-server WebSocket StreamClient for one session */
@@ -177,6 +177,149 @@ class TerminalMirror {
   stop(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = undefined;
+  }
+}
+
+/** Event-driven variant — debounce instead of polling. Zero CPU when idle. */
+class TerminalMirrorDebounce {
+  private debounceTimer?: ReturnType<typeof setTimeout>;
+  private dirtyLines = new Set<number>();
+  private dirty = false;
+  private title: string;
+  private lastCols = 0;
+  private lastRows = 0;
+  private stopped = false;
+  private pty: any;
+  private DEBOUNCE_MS = 16;
+
+  constructor(
+    private sessionId: string,
+    private session: any,
+    private emit: (data: Record<string, unknown>) => void,
+  ) {
+    this.title = session.name;
+    this.pty = session.pty;
+  }
+
+  start(): void {
+    const pty = this.pty;
+    if (!pty) return;
+
+    const dims = pty.getScreenDimensions();
+    this.lastCols = dims.cols;
+    this.lastRows = dims.rows;
+    this.title = composeTitle(this.session);
+    const initial = pty.getInitialScreen();
+
+    let fullState: Record<string, unknown>;
+    if (initial.source === 'cache' && initial.text) {
+      const textLines = initial.text.split('\n');
+      const lines: Array<{ spans: unknown[] }> = [];
+      for (let i = 0; i < dims.rows; i++) {
+        const raw = textLines[i] || '';
+        lines.push({ spans: raw ? parseAnsiLine(raw) : [] });
+      }
+      const inputModes = pty.getInputModes();
+      fullState = {
+        type: 'screen' as const,
+        width: dims.cols,
+        height: dims.rows,
+        cursor: { x: 0, y: 0 },
+        mouseMode: pty.getMouseMode(),
+        bracketedPasteMode: inputModes.bracketedPaste,
+        sendFocusMode: inputModes.sendFocus,
+        title: this.title,
+        lines,
+      };
+    } else {
+      const buffer = initial.buffer ?? pty.getBuffer();
+      const bs = bufferToScreenState(buffer, dims.cols, dims.rows, this.title);
+      fullState = { type: 'screen', ...bs };
+    }
+
+    this.emit(fullState);
+
+    pty.onScreenChange((startLine: number, endLine: number) => {
+      if (this.stopped) return;
+      this.dirty = true;
+      for (let i = startLine; i < endLine; i++) this.dirtyLines.add(i);
+      this.scheduleFlush();
+    });
+
+    pty.onCursorChange(() => {
+      if (this.stopped) return;
+      this.dirty = true;
+      this.scheduleFlush();
+    });
+
+    pty.onTitleChange((t: string) => {
+      if (this.stopped) return;
+      this.title = t;
+      this.dirty = true;
+      this.scheduleFlush();
+    });
+  }
+
+  private scheduleFlush(): void {
+    if (this.debounceTimer) return; // already scheduled
+    this.debounceTimer = setTimeout(() => this.flush(), this.DEBOUNCE_MS);
+  }
+
+  private flush(): void {
+    this.debounceTimer = undefined;
+    if (this.stopped || !this.dirty) return;
+
+    const pty = this.pty;
+    const dims = pty.getScreenDimensions();
+    const dimsChanged = dims.cols !== this.lastCols || dims.rows !== this.lastRows;
+
+    if (dimsChanged) {
+      this.lastCols = dims.cols;
+      this.lastRows = dims.rows;
+      this.title = composeTitle(this.session);
+      const buffer = pty.getBuffer();
+      const inputModes = pty.getInputModes();
+      const fullState = {
+        type: 'screen' as const,
+        ...bufferToScreenState(buffer, dims.cols, dims.rows, this.title),
+        mouseMode: pty.getMouseMode(),
+        bracketedPasteMode: inputModes.bracketedPaste,
+        sendFocusMode: inputModes.sendFocus,
+      };
+      this.emit(fullState);
+      this.dirtyLines.clear();
+      this.dirty = false;
+      return;
+    }
+
+    const changed: Record<string, { spans: unknown[] }> = {};
+    for (const lineIdx of this.dirtyLines) {
+      const absoluteIdx = dims.baseY + lineIdx;
+      const line = pty.getScreenLine(absoluteIdx);
+      if (line) changed[String(lineIdx)] = { spans: lineToSpans(line, dims.cols) };
+    }
+
+    this.title = composeTitle(this.session);
+    const inputModes = pty.getInputModes();
+    const delta: Record<string, unknown> = {
+      type: 'delta',
+      cursor: { x: dims.cursorX, y: dims.cursorY },
+      mouseMode: pty.getMouseMode(),
+      bracketedPasteMode: inputModes.bracketedPaste,
+      sendFocusMode: inputModes.sendFocus,
+      title: this.title,
+    };
+    if (Object.keys(changed).length > 0) delta.changed = changed;
+
+    this.emit(delta);
+    this.dirtyLines.clear();
+    this.dirty = false;
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = undefined;
   }
 }
 
