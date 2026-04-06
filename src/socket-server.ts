@@ -187,7 +187,11 @@ export class SocketServer {
     this.options = options;
     this.server = createServer((socket) => this.handleConnection(socket));
 
-    // Forward session-end events to subscribed socket clients
+    // Forward session lifecycle events to subscribed socket clients
+    options.sessionManager.on('session-settings-changed', (sessionId: string, access: any) => {
+      this.broadcastSessionEvent(sessionId, 'session-settings-changed', { sessionId, access });
+    });
+
     options.sessionManager.on('session-end', (sessionId: string) => {
       this.broadcastSessionEvent(sessionId, 'session-end', { sessionId });
       // Clean up terminal mirrors and subscriptions for this session

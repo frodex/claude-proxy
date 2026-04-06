@@ -4,6 +4,7 @@
 // or throws an OperationError.
 
 import { randomBytes } from 'crypto';
+import { saveSessionMeta } from './session-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { Config, Session, SessionAccess } from './types.js';
 import type { DirScanner } from './dir-scanner.js';
@@ -261,6 +262,10 @@ export class ProxyOperations {
     if (updates.password !== undefined) session.access.passwordHash = updates.password;
     if (updates.viewOnlyAllowScroll !== undefined) session.access.viewOnlyAllowScroll = updates.viewOnlyAllowScroll;
     if (updates.viewOnlyAllowResize !== undefined) session.access.viewOnlyAllowResize = updates.viewOnlyAllowResize;
+
+    // Persist and notify subscribers of the change
+    saveSessionMeta(id, session as any);
+    this.sessionManager.emit('session-settings-changed', id, session.access);
   }
 
   restartSession(id: string, username: string, settings?: Record<string, any>): SessionInfo {
