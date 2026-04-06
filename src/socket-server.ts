@@ -3,7 +3,9 @@
 import { createServer, type Socket } from 'net';
 import { unlinkSync, chmodSync, chownSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { execFileSync } from 'child_process';
+import { execFileSync, execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import {
   parseMessage,
   serializeMessage,
@@ -433,7 +435,7 @@ export class SocketServer {
           respond({ ok: true });
           break;
         case 'scroll':
-          this.handleScroll(client, p.sessionId as string, (p.user as string) || 'root', p.offset);
+          await this.handleScroll(client, p.sessionId as string, (p.user as string) || 'root', p.offset);
           respond({ ok: true });
           break;
         default:
@@ -485,12 +487,12 @@ export class SocketServer {
     }
   }
 
-  private handleScroll(
+  private async handleScroll(
     client: ConnectedClient,
     sessionId: string,
     username: string,
     offsetRaw: unknown,
-  ): void {
+  ): Promise<void> {
     const session = this.options.sessionManager.getSession(sessionId) as any;
     if (!session?.pty) {
       throw { code: 'NOT_FOUND', message: 'Session not found' };
@@ -517,8 +519,8 @@ export class SocketServer {
 
     let capturedLines: string[];
     try {
-      const output = execFileSync('tmux', tmuxArgs, { encoding: 'utf-8', timeout: 5000 });
-      capturedLines = output.split('\n');
+      const { stdout } = await execFileAsync('tmux', tmuxArgs, { encoding: 'utf-8', timeout: 5000 });
+      capturedLines = stdout.split('\n');
       if (capturedLines.length > 0 && capturedLines[capturedLines.length - 1] === '') {
         capturedLines.pop();
       }
