@@ -183,18 +183,18 @@ export class PtyMultiplexer {
         throw err;
       }
     } else {
-      // Local session — use temp script to avoid quote escaping
+      // Local session — use temp script to avoid quote escaping.
+      // Use 'exec su' so the launch script is replaced by su — tmux's SIGWINCH
+      // reaches su directly without bash intercepting it. This fixes terminal
+      // resize for non-root sessions (su - creates a new session group).
       if (options.runAsUser) {
         if (options.command === 'claude') {
           const argsStr = options.args.length > 0 ? ' ' + options.args.join(' ') : '';
-          innerCommand = `su - ${options.runAsUser} -c '${cdPrefix}${launcherPath}${argsStr}'`;
+          innerCommand = `exec su - ${options.runAsUser} -c '${cdPrefix}exec ${launcherPath}${argsStr}'`;
         } else {
-          // Run via login shell so PATH matches the target user (e.g. ~/.local/bin/cursor-agent).
-          // Resolving with the proxy's `which` and baking /root/.local/bin/... breaks non-root runAsUser
-          // and can miss cursor-agent if the service PATH differs from the user's login PATH.
           const innerForBash = ['exec', options.command, ...options.args].join(' ');
           const line = `${cdPrefix}bash -lc ${JSON.stringify(innerForBash)}`;
-          innerCommand = `su - ${options.runAsUser} -c ${JSON.stringify(line)}`;
+          innerCommand = `exec su - ${options.runAsUser} -c ${JSON.stringify(line)}`;
         }
       } else if (options.command === 'claude') {
         innerCommand = `${cdPrefix}${launcherPath}`;
@@ -362,7 +362,7 @@ export class PtyMultiplexer {
     this.vterm.resize(cols, rows);
 
     // Now resize the tmux window — with the attached client already at the new size,
-    // the window can grow to match. This sends SIGWINCH to the inner application.
+    // the window can grow to match.
     try {
       if (this.remoteHost) {
         execSync(
@@ -377,6 +377,49 @@ export class PtyMultiplexer {
         );
       }
     } catch { /* session may not exist yet */ }
+
+    // Send SIGWINCH to all descendant processes of the pane.
+    // su - creates a new session group that doesn't receive SIGWINCH from tmux's
+    // resize-window. We find all child processes and signal each one.
+    if (!this.remoteHost) {
+      try {
+        const panePid = execFileSync(
+          'tmux',
+          [...this.tmuxLocalCliPrefix(), 'display-message', '-t', this.tmuxId, '-p', '#{pane_pid}'],
+          { encoding: 'utf-8', timeout: 2000 },
+        ).trim();
+        if (panePid) {
+          // Find ALL descendant PIDs recursively (su → sh → claude chain can be 4+ deep)
+          const descendants: string[] = [];
+          const queue = [panePid];
+          while (queue.length > 0) {
+            const pid = queue.shift()!;
+            try {
+              const children = execFileSync(
+                'ps', ['--ppid', pid, '-o', 'pid=', '--no-headers'],
+                { encoding: 'utf-8', timeout: 1000 },
+              ).trim().split('\n').map(s => s.trim()).filter(Boolean);
+              for (const child of children) {
+                if (!descendants.includes(child)) {
+                  descendants.push(child);
+                  queue.push(child);
+                }
+              }
+            } catch { /* no children */ }
+          }
+          // Signal all descendants + the pane pid itself
+          const allPids = [panePid, ...descendants];
+          for (const pid of allPids) {
+            try {
+              process.kill(parseInt(pid), 'SIGWINCH');
+            } catch { /* process may have exited */ }
+          }
+          console.log('[pty-resize] sent SIGWINCH to pids:', allPids.join(', '));
+        }
+      } catch (e: any) {
+        console.warn('[pty-resize] SIGWINCH broadcast failed:', e.message);
+      }
+    }
   }
 
   /**
