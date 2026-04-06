@@ -352,9 +352,17 @@ export class PtyMultiplexer {
   }
 
   resize(cols: number, rows: number): void {
-    // Resize the tmux window FIRST so the inner application gets SIGWINCH.
-    // Without this, tmux just fills the gap with its fill character (dots/lines)
-    // and the application never redraws at the new dimensions.
+    console.log('[pty-resize]', this.tmuxId, cols + 'x' + rows, 'socketPath=' + (this.socketPath || 'none'));
+    // Resize the attached PTY client FIRST — this is the tmux client that constrains
+    // the pane size. Without resizing it first, tmux resize-window is limited by the
+    // smallest attached client (which is us at the old size).
+    if (this.pty) {
+      this.pty.resize(cols, rows);
+    }
+    this.vterm.resize(cols, rows);
+
+    // Now resize the tmux window — with the attached client already at the new size,
+    // the window can grow to match. This sends SIGWINCH to the inner application.
     try {
       if (this.remoteHost) {
         execSync(
@@ -369,11 +377,6 @@ export class PtyMultiplexer {
         );
       }
     } catch { /* session may not exist yet */ }
-
-    if (this.pty) {
-      this.pty.resize(cols, rows);
-    }
-    this.vterm.resize(cols, rows);
   }
 
   /**
