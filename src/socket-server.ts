@@ -186,6 +186,20 @@ export class SocketServer {
   constructor(options: SocketServerOptions) {
     this.options = options;
     this.server = createServer((socket) => this.handleConnection(socket));
+
+    // Forward session-end events to subscribed socket clients
+    options.sessionManager.on('session-end', (sessionId: string) => {
+      this.broadcastSessionEvent(sessionId, 'session-end', { sessionId });
+      // Clean up terminal mirrors and subscriptions for this session
+      for (const c of this.clients) {
+        c.subscriptions.delete(sessionId);
+        const mirror = c.terminalSubs.get(sessionId);
+        if (mirror) {
+          mirror.stop();
+          c.terminalSubs.delete(sessionId);
+        }
+      }
+    });
   }
 
   /** Push an event to all clients subscribed to this session */
