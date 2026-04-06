@@ -601,7 +601,6 @@ export class SocketServer {
           respond({ ok: true });
           break;
         case 'resize':
-          console.log('[resize]', p.sessionId, 'user=' + p.user, 'cols=' + p.cols, 'rows=' + p.rows);
           this.handleResize(client, p.sessionId as string, (p.user as string) || 'root', p.cols, p.rows);
           respond({ ok: true });
           break;

@@ -352,7 +352,6 @@ export class PtyMultiplexer {
   }
 
   resize(cols: number, rows: number): void {
-    console.log('[pty-resize]', this.tmuxId, cols + 'x' + rows, 'socketPath=' + (this.socketPath || 'none'));
     // Resize the attached PTY client FIRST — this is the tmux client that constrains
     // the pane size. Without resizing it first, tmux resize-window is limited by the
     // smallest attached client (which is us at the old size).
@@ -414,7 +413,6 @@ export class PtyMultiplexer {
               process.kill(parseInt(pid), 'SIGWINCH');
             } catch { /* process may have exited */ }
           }
-          console.log('[pty-resize] sent SIGWINCH to pids:', allPids.join(', '));
         }
       } catch (e: any) {
         console.warn('[pty-resize] SIGWINCH broadcast failed:', e.message);
