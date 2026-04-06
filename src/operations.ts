@@ -37,12 +37,7 @@ export function composeTitle(session: any): string {
     return `${prefix}${c.username}`;
   });
 
-  // Web dashboard viewers (tracked by subscribe/unsubscribe)
-  const webViewers: string[] = session._webViewers
-    ? Array.from(new Set(session._webViewers.values() as Iterable<string>))
-    : [];
-
-  const allUsers = [...sshUsers, ...webViewers.map((u: string) => `${u}`)];
+  const owner = (session.access?.owner || 'root').replace(/^cp-/, '');
 
   const ms = Date.now() - new Date(session.createdAt).getTime();
   const seconds = Math.floor(ms / 1000);
@@ -55,8 +50,10 @@ export function composeTitle(session: any): string {
     uptime = `${h}h${m > 0 ? m + 'm' : ''}`;
   }
 
-  const userStr = allUsers.length > 0 ? allUsers.join(', ') : 'no users';
-  return `${session.name} | ${userStr} | ${uptime}`;
+  // Show owner, then any SSH clients (deduplicated, owner not repeated)
+  const viewers = sshUsers.filter(u => u !== owner && u !== `*${owner}`);
+  const viewerStr = viewers.length > 0 ? ' + ' + viewers.join(', ') : '';
+  return `${session.name} | ${owner}${viewerStr} | ${uptime}`;
 }
 
 export function parseAnsiLine(
