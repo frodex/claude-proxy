@@ -544,7 +544,7 @@ export class SocketServer {
 
           const session = sessionManager.getSession(sessionId) as any;
           if (session?.pty) {
-            const mirror = new TerminalMirror(sessionId, session, (data) => {
+            const mirror = new TerminalMirrorDebounce(sessionId, session, (data) => {
               try {
                 client.socket.write(
                   serializeMessage({ event: 'terminal', sessionId, data }),
