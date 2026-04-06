@@ -76,13 +76,19 @@ export function canUserEditSession(username: string, access: { owner: string; ad
  * Check if a user can access a session based on its access rules
  */
 export function canUserAccessSession(username: string, access: { owner: string; hidden: boolean; public: boolean; allowedUsers: string[]; allowedGroups: string[] }): boolean {
+  // Admins and root access all sessions
+  if (username === 'root' || isUserInGroup(username, 'admins')) return true;
+
   // Owner always has access
   if (username === access.owner) return true;
 
-  // Hidden sessions: only owner
+  // cp-users membership required for all non-admin, non-owner access
+  if (!isUserInGroup(username, 'users')) return false;
+
+  // Hidden sessions: only owner (owner already returned above)
   if (access.hidden) return false;
 
-  // Public sessions: everyone
+  // Public sessions: all cp-users members
   if (access.public) return true;
 
   // Check allowed users

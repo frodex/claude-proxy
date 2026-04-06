@@ -1065,16 +1065,20 @@ export class SessionManager extends EventEmitter {
    * List sessions visible to a specific user (filtered by access control)
    */
   listSessionsForUser(username: string): Session[] {
+    const isAdmin = username === 'root' || isUserInGroup(username, 'admins');
     return Array.from(this.sessions.values()).filter(session => {
+      // Admins and root see all sessions (including hidden)
+      if (isAdmin) return true;
+      // Owner always sees their own sessions
+      if (username === session.access.owner) return true;
       // Socket-based sessions with provisioner: use group-based access control
       if (session.socketPath && this.provisioner) {
-        if (username === session.access.owner) return true;
-        if (session.access.hidden && username !== session.access.owner) return false;
+        if (session.access.hidden) return false;
         const groups = this.provisioner.getGroups(username);
+        // cp-users membership is required for all non-admin, non-owner access
+        if (!groups.includes('users')) return false;
+        if (session.access.public) return true;
         const sessionGroup = `sess-${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-        if (session.access.public) {
-          return groups.includes('users');  // getGroups strips cp- prefix
-        }
         return groups.includes(sessionGroup) ||
                session.access.allowedGroups.some(g => groups.includes(g));
       }
