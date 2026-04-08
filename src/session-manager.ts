@@ -258,9 +258,15 @@ export class SessionManager extends EventEmitter {
       socketPath,
       onExit: (code) => {
         console.log(`[session-exit] "${name}" (${tmuxId}) exited with code ${code}`);
-        // Keep JSON metadata so listDeadSessions() can offer restart (tmux gone, meta remains).
-        this.sessions.delete(tmuxId);
-        this.emit('session-end', tmuxId);
+        // Guard: only delete if this is still OUR session (restart reuses the same tmuxId —
+        // the new session's createSession sets sessions.set(tmuxId) before old PTY exits)
+        const current = this.sessions.get(tmuxId);
+        if (current && current.pty === pty) {
+          this.sessions.delete(tmuxId);
+          this.emit('session-end', tmuxId);
+        } else {
+          console.log(`[session-exit] "${tmuxId}" — skipping cleanup, session was replaced (restart)`);
+        }
       },
     });
 
