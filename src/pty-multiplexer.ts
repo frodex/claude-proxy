@@ -162,8 +162,14 @@ export class PtyMultiplexer {
         try {
           unlinkSync(localStaging);
         } catch {}
-        console.error(`[tmux] failed to create remote session: ${err.message}`);
-        throw err;
+        // If "duplicate session" — the remote tmux is still alive (orphaned).
+        // Re-adopt it by attaching instead of failing.
+        if (err.message && err.message.includes('duplicate session')) {
+          console.log(`[tmux] remote session ${this.tmuxId} already exists on ${this.remoteHost} — re-adopting`);
+        } else {
+          console.error(`[tmux] failed to create remote session: ${err.message}`);
+          throw err;
+        }
       }
     } else if (this.remoteHost && useClaudeRemoteInstaller) {
       // Remote Claude — scp launcher + wrapper scripts, then run in tmux
@@ -221,8 +227,12 @@ export class PtyMultiplexer {
         console.log(`[tmux] created remote session ${this.tmuxId} on ${this.remoteHost}`);
       } catch (err: any) {
         try { unlinkSync(localWrapper); } catch {}
-        console.error(`[tmux] failed to create remote session: ${err.message}`);
-        throw err;
+        if (err.message && err.message.includes('duplicate session')) {
+          console.log(`[tmux] remote session ${this.tmuxId} already exists on ${this.remoteHost} — re-adopting`);
+        } else {
+          console.error(`[tmux] failed to create remote session: ${err.message}`);
+          throw err;
+        }
       }
     } else {
       // Local session — use temp script to avoid quote escaping.
