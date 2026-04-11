@@ -143,7 +143,7 @@ export class PtyMultiplexer {
       const localStaging = `/tmp/claude-proxy-generic-remote-${this.tmuxId}.sh`;
       writeFileSync(
         localStaging,
-        `#!/bin/bash\nrm -f "${remoteScript}"\n${innerGeneric}\n`,
+        `#!/bin/bash\nrm -f "${remoteScript}"\nexec ${innerGeneric}\n`,
         { mode: 0o755 },
       );
       try {
