@@ -351,8 +351,17 @@ export class PtyMultiplexer {
         console.log(`[tmux] session ${this.tmuxId} is dead`);
         this.onExitCallback?.(exitCode);
       } else {
-        // tmux attach exited but session is alive — proxy might be shutting down
-        console.log(`[tmux] session ${this.tmuxId} still alive (proxy detaching)`);
+        // tmux attach exited but session is alive — re-attach automatically
+        console.log(`[tmux] session ${this.tmuxId} still alive — re-attaching...`);
+        setTimeout(() => {
+          try {
+            this.attachToTmux(cols, rows);
+            console.log(`[tmux] re-attached to ${this.tmuxId}`);
+          } catch (e: any) {
+            console.error(`[tmux] re-attach failed for ${this.tmuxId}: ${e.message}`);
+            this.onExitCallback?.(exitCode);
+          }
+        }, 1000);
       }
     });
   }
