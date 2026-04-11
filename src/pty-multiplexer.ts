@@ -110,6 +110,36 @@ export class PtyMultiplexer {
       } else {
         innerGeneric = `${cdPrefix}${remoteCmdLine}`;
       }
+      // Ensure prerequisites on remote host before launching
+      try {
+        const checkResult = execSync(
+          `ssh ${this.remoteHost} "which tmux && which ${options.command}"`,
+          { stdio: 'pipe', timeout: 15000 },
+        ).toString();
+        console.log(`[remote-prereq] ${this.remoteHost}: ${checkResult.trim().replace(/\n/g, ', ')}`);
+      } catch {
+        // Something missing — try to install
+        console.log(`[remote-prereq] ${this.remoteHost}: prerequisites missing, installing...`);
+        const installSteps = [
+          // tmux
+          `which tmux >/dev/null 2>&1 || { echo "Installing tmux..."; apt-get update -qq && apt-get install -y -qq tmux || yum install -y tmux || apk add tmux; }`,
+          // cursor-agent
+          ...(options.launchProfile === 'cursor' ? [
+            `which cursor-agent >/dev/null 2>&1 || { echo "Installing cursor-agent..."; npm install -g @anthropic-ai/cursor-agent 2>/dev/null || echo "cursor-agent install failed — may need manual setup"; }`,
+          ] : []),
+        ];
+        try {
+          execSync(
+            `ssh ${this.remoteHost} '${installSteps.join(' && ')}'`,
+            { stdio: 'pipe', timeout: 120000 },
+          );
+          console.log(`[remote-prereq] ${this.remoteHost}: installation complete`);
+        } catch (installErr: any) {
+          console.error(`[remote-prereq] ${this.remoteHost}: installation failed: ${installErr.message}`);
+          throw new Error(`Remote host ${this.remoteHost} missing prerequisites (tmux, ${options.command}). Auto-install failed.`);
+        }
+      }
+
       const localStaging = `/tmp/claude-proxy-generic-remote-${this.tmuxId}.sh`;
       writeFileSync(
         localStaging,
@@ -167,6 +197,18 @@ export class PtyMultiplexer {
       const localWrapper = `/tmp/claude-proxy-wrapper-${this.tmuxId}.sh`;
       const launcherPath = resolve(import.meta.dirname ?? '.', '..', 'scripts', 'launch-claude-remote.sh');
       writeFileSync(localWrapper, wrapperLines.join('\n') + '\n', { mode: 0o755 });
+
+      // Ensure tmux on remote host
+      try {
+        execSync(`ssh ${this.remoteHost} "which tmux"`, { stdio: 'pipe', timeout: 15000 });
+      } catch {
+        console.log(`[remote-prereq] ${this.remoteHost}: tmux missing, installing...`);
+        try {
+          execSync(`ssh ${this.remoteHost} 'apt-get update -qq && apt-get install -y -qq tmux || yum install -y tmux || apk add tmux'`, { stdio: 'pipe', timeout: 120000 });
+        } catch (e: any) {
+          throw new Error(`Remote host ${this.remoteHost} missing tmux. Auto-install failed: ${e.message}`);
+        }
+      }
 
       try {
         // Copy both scripts to remote
