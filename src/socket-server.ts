@@ -193,6 +193,7 @@ class TerminalMirrorDebounce {
   private stopped = false;
   private pty: any;
   private DEBOUNCE_MS = 16;
+  private prevLineHashes: string[] = [];  // hash of each line's spans for diff detection
 
   constructor(
     private sessionId: string,
@@ -289,6 +290,7 @@ class TerminalMirrorDebounce {
         sendFocusMode: inputModes.sendFocus,
       };
       this.emit(fullState);
+      this.prevLineHashes = [];  // reset — full screen sent, no prior state
       this.dirtyLines.clear();
       this.dirty = false;
       return;
@@ -298,7 +300,15 @@ class TerminalMirrorDebounce {
     for (const lineIdx of this.dirtyLines) {
       const absoluteIdx = dims.baseY + lineIdx;
       const line = pty.getScreenLine(absoluteIdx);
-      if (line) changed[String(lineIdx)] = { spans: lineToSpans(line, dims.cols) };
+      if (line) {
+        const spans = lineToSpans(line, dims.cols);
+        // Only include lines that actually changed — avoids sending 24+ unchanged lines per delta
+        const hash = JSON.stringify(spans);
+        if (hash !== this.prevLineHashes[lineIdx]) {
+          changed[String(lineIdx)] = { spans };
+          this.prevLineHashes[lineIdx] = hash;
+        }
+      }
     }
 
     this.title = composeTitle(this.session);
