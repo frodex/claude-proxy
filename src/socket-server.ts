@@ -194,6 +194,7 @@ class TerminalMirrorDebounce {
   private pty: any;
   private DEBOUNCE_MS = 16;
   private prevLineHashes: string[] = [];  // hash of each line's spans for diff detection
+  private lastBaseY = -1;  // track baseY changes — forces full send when viewport scrolls
 
   constructor(
     private sessionId: string,
@@ -291,23 +292,28 @@ class TerminalMirrorDebounce {
       };
       this.emit(fullState);
       this.prevLineHashes = [];  // reset — full screen sent, no prior state
+      this.lastBaseY = dims.baseY;
       this.dirtyLines.clear();
       this.dirty = false;
       return;
+    }
+
+    // If baseY changed (terminal scrolled), invalidate all hashes — every line shifted
+    const baseYChanged = dims.baseY !== this.lastBaseY;
+    if (baseYChanged) {
+      this.prevLineHashes = [];
+      this.lastBaseY = dims.baseY;
     }
 
     const changed: Record<string, { spans: unknown[] }> = {};
     for (const lineIdx of this.dirtyLines) {
       const absoluteIdx = dims.baseY + lineIdx;
       const line = pty.getScreenLine(absoluteIdx);
-      if (line) {
-        const spans = lineToSpans(line, dims.cols);
-        // Only include lines that actually changed — avoids sending 24+ unchanged lines per delta
-        const hash = JSON.stringify(spans);
-        if (hash !== this.prevLineHashes[lineIdx]) {
-          changed[String(lineIdx)] = { spans };
-          this.prevLineHashes[lineIdx] = hash;
-        }
+      const spans = line ? lineToSpans(line, dims.cols) : [];
+      const hash = JSON.stringify(spans);
+      if (hash !== this.prevLineHashes[lineIdx]) {
+        changed[String(lineIdx)] = { spans };
+        this.prevLineHashes[lineIdx] = hash;
       }
     }
 
